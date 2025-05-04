@@ -16,3 +16,9 @@
     # This will fetch 10 images and save them in the 'images' directory
     cargo run --manifest-path tooling/Cargo.toml -- fetch-images 10 ./images
     ```
+
+## References:
+
+- Ballé J., Minnen D., Singh S., Hwang S. J., Johnston N. (2018) ["Variational image compression with a scale hyperprior"](https://arxiv.org/abs/1802.01436).
+- Minnen D., Ballé J., Toderici G. (2018) [Joint autoregressive and hierarchical priors for learned image compression](https://arxiv.org/abs/1809.02736).
+- Ballé J., Laparra V., Simoncelli E. P. (2016) ["Density Modeling of Images using a Generalized Normalization Transformation"](https://arxiv.org/abs/1511.06281).

@@ -122,23 +122,17 @@ class HyperDecoder(torch.nn.Module):
         x = self.deconvolution3(x)
         return x
 
-class QuantizationFunction(torch.autograd.Function):
-    @staticmethod
-    def forward(context, x):
-        return torch.where(x >= 0.0, 1.0, -1.0)
-
-    @staticmethod
-    def backward(context, gradient):
-        return gradient
-
 class Quantization(torch.nn.Module):
-    def __init__(self, minimum=-0.1, maximum=0.1):
+    def __init__(self):
         super().__init__()
-        self.hardtanh = torch.nn.Hardtanh(minimum, maximum)
+        self.activation = torch.nn.Hardtanh(-2.0, 2.0)
 
     def forward(self, x):
-        x = self.hardtanh(x)
-        return QuantizationFunction.apply(x)
+        x = self.activation(x)
+        if self.training:
+            return x + torch.empty_like(x).uniform_(-0.5, 0.5)
+        else:
+            return x.round()
 
 class Autoencoder(torch.nn.Module):
     def __init__(self):

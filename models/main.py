@@ -1,6 +1,15 @@
 import os
+import sys
 import torch
 import torchvision
+import torchmetrics
+
+DATASET_DIRECTORY="images"
+MODEL_TRAINING_EPOCHS = 100000
+MODEL_TRAINING_BATCH_SIZE = 32
+MODEL_TRAINING_LEARNING_RATE = 1e-5
+MODEL_TESTING_BATCH_SIZE = 32
+MODEL_TESTING_EPOCHS_INTERVAL = 10
 
 class LowerBoundFunction(torch.autograd.Function):
     @staticmethod
@@ -152,39 +161,50 @@ class Autoencoder(torch.nn.Module):
         x = self.decoder(torch.cat([x, y], dim=1))
         return x
 
-class ImageDataset(torch.utils.data.Dataset):
+class Dataset(torch.utils.data.Dataset):
     def __init__(self, directory):
         self.images = []
         for root, _, files in os.walk(directory):
             for file in files:
                 if file.lower().endswith((".png", ".jpg", "jpeg")):
-                    self.images.append(os.path.join(root, file))
+                    path = os.path.join(root, file)
+                    self.images.append(
+                        torchvision.io.decode_image(path, mode="RGB").float() / 255.0
+                    )
 
     def __len__(self):
         return len(self.images)
 
     def __getitem__(self, index):
-        return torchvision.io.decode_image(self.images[index], mode="RGB").float() / 255.0
+        return self.images[index]
 
 if __name__ == "__main__":
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    dataset = ImageDataset("images")
-    dataloader = torch.utils.data.DataLoader(dataset, batch_size=32, shuffle=True)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    dataset = Dataset(DATASET_DIRECTORY)
     model = Autoencoder().to(device)
-    optimizer = torch.optim.Adam(model.parameters(), 1e-5)
+    optimizer = torch.optim.Adam(model.parameters(), MODEL_TRAINING_LEARNING_RATE)
     criterion = torch.nn.MSELoss()
+    testing_dataset, training_dataset = torch.utils.data.random_split(dataset, [0.2, 0.8])
+    testing_batches = torch.utils.data.DataLoader(testing_dataset, batch_size=MODEL_TESTING_BATCH_SIZE, shuffle=False)
+    training_batches = torch.utils.data.DataLoader(training_dataset, batch_size=MODEL_TRAINING_BATCH_SIZE, shuffle=True)
+    metrics = torchmetrics.image.PeakSignalNoiseRatio(1.0).to(device)
 
-    epochs = 10000
-    for epoch in range(1, epochs + 1):
+    for epoch in range(1, MODEL_TRAINING_EPOCHS + 1):
         model.train()
-        total_error = 0.0
-        for images in dataloader:
-            images = images.to(device)
+        metrics.reset()
+        for samples in training_batches:
+            samples = samples.to(device)
+            output = model(samples)
             optimizer.zero_grad()
-            output = model(images)
-            error = criterion(output, images)
-            error.backward()
+            criterion(output, samples).backward()
             optimizer.step()
-            total_error += error.detach().item() * images.size(0)
-        average_error = total_error / len(dataset)
-        print(f"[Epoch {epoch}/{epochs}]: Error: {average_error:.6f}")
+            metrics.update(output, samples)
+        print(f"[EPOCH {epoch}]: PSNR: {metrics.compute().item():.3f}")
+        if epoch % MODEL_TESTING_EPOCHS_INTERVAL == 0:
+            model.eval()
+            metrics.reset()
+            with torch.no_grad():
+                for samples in testing_batches:
+                    samples = samples.to(device)
+                    metrics.update(model(samples), samples)
+                print(f"[EPOCH {epoch} - TESTING]: PSNR: {metrics.compute().item():.3f}")

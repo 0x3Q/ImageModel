@@ -131,35 +131,43 @@ class HyperDecoder(torch.nn.Module):
         x = self.deconvolution3(x)
         return x
 
-class Quantization(torch.nn.Module):
-    def __init__(self):
+class VectorQuantizer(torch.nn.Module):
+    def __init__(self, features, symbols):
         super().__init__()
-        self.activation = torch.nn.Hardtanh(-2.0, 2.0)
+        self.symbols = torch.nn.Embedding(symbols, features)
+        self.symbols.weight.data.uniform_(-1.0 / symbols, 1 / symbols)
 
     def forward(self, x):
-        x = self.activation(x)
-        if self.training:
-            return x + torch.empty_like(x).uniform_(-0.5, 0.5)
-        else:
-            return x.round()
+        distances = self.get_squared_distances(x, self.symbols.weight.permute(1, 0))
+        symbols = self.symbols(distances.argmin(dim=-1))
+        deviation = torch.nn.functional.mse_loss(symbols, x.detach()) + torch.nn.functional.mse_loss(x, symbols.detach()) * 0.25
+        return x + (symbols - x).detach(), deviation
+
+    def get_squared_distances(self, x, y):
+        return torch.sum(x ** 2.0, dim=-1, keepdim=True) + torch.sum(y ** 2, dim=0, keepdim=True) - torch.matmul(x, y) * 2.0
 
 class Autoencoder(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.encoder = Encoder(192)
         self.hyper_encoder = HyperEncoder(192)
+        self.quantizer = VectorQuantizer(192, 4096)
+        self.hyper_quantizer = VectorQuantizer(192, 4096)
         self.decoder = Decoder(192 * 2)
         self.hyper_decoder = HyperDecoder(192)
-        self.quantization = Quantization()
 
     def forward(self, x):
         x = self.encoder(x)
         y = self.hyper_encoder(x)
-        x = self.quantization(x)
-        y = self.quantization(y)
+        x = x.permute(0, 2, 3, 1)
+        y = y.permute(0, 2, 3, 1)
+        x, x_error = self.quantizer(x)
+        y, y_error = self.hyper_quantizer(y)
+        x = x.permute(0, 3, 1, 2)
+        y = y.permute(0, 3, 1, 2)
         y = self.hyper_decoder(y)
         x = self.decoder(torch.cat([x, y], dim=1))
-        return x
+        return x, x_error + y_error
 
 class Dataset(torch.utils.data.Dataset):
     def __init__(self, directory):
@@ -194,11 +202,11 @@ if __name__ == "__main__":
         metrics.reset()
         for samples in training_batches:
             samples = samples.to(device)
-            output = model(samples)
-            optimizer.zero_grad()
-            criterion(output, samples).backward()
+            outputs, error = model(samples)
+            (error + criterion(outputs, samples)).backward()
             optimizer.step()
-            metrics.update(output, samples)
+            optimizer.zero_grad()
+            metrics.update(outputs, samples)
         print(f"[EPOCH {epoch}]: PSNR: {metrics.compute().item():.3f}")
         if epoch % MODEL_TESTING_EPOCHS_INTERVAL == 0:
             model.eval()
@@ -206,5 +214,6 @@ if __name__ == "__main__":
             with torch.no_grad():
                 for samples in testing_batches:
                     samples = samples.to(device)
-                    metrics.update(model(samples), samples)
+                    outputs, _ = model(samples)
+                    metrics.update(outputs, samples)
                 print(f"[EPOCH {epoch} - TESTING]: PSNR: {metrics.compute().item():.3f}")

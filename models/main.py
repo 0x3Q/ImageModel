@@ -64,19 +64,21 @@ class GDN(torch.nn.Module):
 class Encoder(torch.nn.Module):
     def __init__(self, channels):
         super().__init__()
-        self.activation = GDN(channels, inverse=False)
         self.convolution1 = torch.nn.Conv2d(3, channels, kernel_size=5, stride=2, padding=2)
+        self.activation1 = GDN(channels, inverse=False)
         self.convolution2 = torch.nn.Conv2d(channels, channels, kernel_size=5, stride=2, padding=2)
+        self.activation2 = GDN(channels, inverse=False)
         self.convolution3 = torch.nn.Conv2d(channels, channels, kernel_size=5, stride=2, padding=2)
+        self.activation3 = GDN(channels, inverse=False)
         self.convolution4 = torch.nn.Conv2d(channels, channels, kernel_size=5, stride=2, padding=2)
 
     def forward(self, x):
         x = self.convolution1(x)
-        x = self.activation(x)
+        x = self.activation1(x)
         x = self.convolution2(x)
-        x = self.activation(x)
+        x = self.activation2(x)
         x = self.convolution3(x)
-        x = self.activation(x)
+        x = self.activation3(x)
         x = self.convolution4(x)
         return x
 
@@ -99,19 +101,21 @@ class HyperEncoder(torch.nn.Module):
 class Decoder(torch.nn.Module):
     def __init__(self, channels):
         super().__init__()
-        self.activation = GDN(channels, inverse=True)
         self.deconvolution1 = torch.nn.ConvTranspose2d(channels, channels, kernel_size=5, stride=2, padding=2, output_padding=1)
+        self.activation1 = GDN(channels, inverse=True)
         self.deconvolution2 = torch.nn.ConvTranspose2d(channels, channels, kernel_size=5, stride=2, padding=2, output_padding=1)
+        self.activation2 = GDN(channels, inverse=True)
         self.deconvolution3 = torch.nn.ConvTranspose2d(channels, channels, kernel_size=5, stride=2, padding=2, output_padding=1)
+        self.activation3 = GDN(channels, inverse=True)
         self.deconvolution4 = torch.nn.ConvTranspose2d(channels, 3, kernel_size=5, stride=2, padding=2, output_padding=1)
 
     def forward(self, x):
         x = self.deconvolution1(x)
-        x = self.activation(x)
+        x = self.activation1(x)
         x = self.deconvolution2(x)
-        x = self.activation(x)
+        x = self.activation2(x)
         x = self.deconvolution3(x)
-        x = self.activation(x)
+        x = self.activation3(x)
         x = self.deconvolution4(x)
         return x
 
@@ -135,7 +139,7 @@ class VectorQuantizer(torch.nn.Module):
     def __init__(self, features, symbols):
         super().__init__()
         self.symbols = torch.nn.Embedding(symbols, features)
-        self.symbols.weight.data.uniform_(-1.0 / symbols, 1 / symbols)
+        self.symbols.weight.data.uniform_(-1.0 / symbols, 1.0 / symbols)
 
     def forward(self, x):
         distances = self.get_squared_distances(x, self.symbols.weight.permute(1, 0))
@@ -144,7 +148,7 @@ class VectorQuantizer(torch.nn.Module):
         return x + (symbols - x).detach(), deviation
 
     def get_squared_distances(self, x, y):
-        return torch.sum(x ** 2.0, dim=-1, keepdim=True) + torch.sum(y ** 2, dim=0, keepdim=True) - torch.matmul(x, y) * 2.0
+        return torch.sum(x ** 2.0, dim=-1, keepdim=True) + torch.sum(y ** 2.0, dim=0, keepdim=True) - torch.matmul(x, y) * 2.0
 
 class Autoencoder(torch.nn.Module):
     def __init__(self):

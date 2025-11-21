@@ -7,7 +7,7 @@ import torchmetrics
 DATASET_DIRECTORY="images"
 MODEL_TRAINING_EPOCHS = 100000
 MODEL_TRAINING_BATCH_SIZE = 32
-MODEL_TRAINING_LEARNING_RATE = 1e-5
+MODEL_TRAINING_LEARNING_RATE = 1e-4
 MODEL_TESTING_BATCH_SIZE = 32
 MODEL_TESTING_EPOCHS_INTERVAL = 10
 
@@ -186,7 +186,7 @@ if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     dataset = Dataset(DATASET_DIRECTORY)
     model = Autoencoder().to(device)
-    optimizer = torch.optim.Adam(model.parameters(), MODEL_TRAINING_LEARNING_RATE)
+    optimizer = torch.optim.AdamW(model.parameters(), MODEL_TRAINING_LEARNING_RATE)
     criterion = torch.nn.MSELoss()
     testing_dataset, training_dataset = torch.utils.data.random_split(dataset, [0.2, 0.8])
     testing_batches = torch.utils.data.DataLoader(testing_dataset, batch_size=MODEL_TESTING_BATCH_SIZE, shuffle=False)

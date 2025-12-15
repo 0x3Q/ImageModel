@@ -69,6 +69,8 @@ class Encoder(torch.nn.Module):
         self.convolution2 = torch.nn.Conv2d(channels, channels, kernel_size=5, stride=2, padding=2)
         self.activation2 = GDN(channels, inverse=False)
         self.convolution3 = torch.nn.Conv2d(channels, channels, kernel_size=5, stride=2, padding=2)
+        self.activation3 = GDN(channels, inverse=False)
+        self.convolution4 = torch.nn.Conv2d(channels, channels, kernel_size=5, stride=2, padding=2)
 
     def forward(self, x):
         x = self.convolution1(x)
@@ -76,6 +78,8 @@ class Encoder(torch.nn.Module):
         x = self.convolution2(x)
         x = self.activation2(x)
         x = self.convolution3(x)
+        x = self.activation3(x)
+        x = self.convolution4(x)
         return x
 
 class HyperEncoder(torch.nn.Module):
@@ -101,7 +105,9 @@ class Decoder(torch.nn.Module):
         self.activation1 = GDN(channels, inverse=True)
         self.deconvolution2 = torch.nn.ConvTranspose2d(channels, channels, kernel_size=5, stride=2, padding=2, output_padding=1)
         self.activation2 = GDN(channels, inverse=True)
-        self.deconvolution3 = torch.nn.ConvTranspose2d(channels, 3, kernel_size=5, stride=2, padding=2, output_padding=1)
+        self.deconvolution3 = torch.nn.ConvTranspose2d(channels, channels, kernel_size=5, stride=2, padding=2, output_padding=1)
+        self.activation3 = GDN(channels, inverse=True)
+        self.deconvolution4 = torch.nn.ConvTranspose2d(channels, 3, kernel_size=5, stride=2, padding=2, output_padding=1)
 
     def forward(self, x):
         x = self.deconvolution1(x)
@@ -109,6 +115,8 @@ class Decoder(torch.nn.Module):
         x = self.deconvolution2(x)
         x = self.activation2(x)
         x = self.deconvolution3(x)
+        x = self.activation3(x)
+        x = self.deconvolution4(x)
         return x
 
 class HyperDecoder(torch.nn.Module):

@@ -140,15 +140,29 @@ class VectorQuantizer(torch.nn.Module):
         return x + (symbols - x).detach(), deviation
 
     def get_squared_distances(self, x, y):
-        return torch.sum(x ** 2.0, dim=-1, keepdim=True) + torch.sum(y ** 2.0, dim=0, keepdim=True) - torch.matmul(x, y) * 2.0
+        return torch.sum(x ** 2, dim=-1, keepdim=True) + torch.sum(y ** 2, dim=-2, keepdim=True) - torch.matmul(x, y) * 2.0
+
+class ProductQuantizer(torch.nn.Module):
+    def __init__(self, features, splits, symbols):
+        super().__init__()
+        self.quantizers = torch.nn.ModuleList(VectorQuantizer(features // splits, symbols) for _ in range(splits))
+
+    def forward(self, x):
+        outputs = self.get_outputs_from_quantizers(x, len(self.quantizers))
+        errors = [error for _, error in outputs]
+        symbols = [symbol for symbol, _ in outputs]
+        return torch.cat(symbols, dim=-1), sum(errors)
+
+    def get_outputs_from_quantizers(self, x, chunks):
+        return [quantizer(x) for x, quantizer in zip(torch.chunk(x, chunks, dim=-1), self.quantizers)]
 
 class Autoencoder(torch.nn.Module):
     def __init__(self):
         super().__init__()
         self.encoder = Encoder(192)
         self.hyper_encoder = HyperEncoder(192)
-        self.quantizer = VectorQuantizer(192, 4096)
-        self.hyper_quantizer = VectorQuantizer(192, 4096)
+        self.quantizer = ProductQuantizer(192, 6, 256)
+        self.hyper_quantizer = ProductQuantizer(192, 6, 256)
         self.decoder = Decoder(192 * 2)
         self.hyper_decoder = HyperDecoder(192)
 

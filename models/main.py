@@ -135,6 +135,23 @@ class HyperDecoder(torch.nn.Module):
         x = self.deconvolution3(x)
         return x
 
+class Context(torch.nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.attention1 = torchvision.models.swin_transformer.SwinTransformerBlock(channels, 6, shift_size=[0, 0], window_size=[8, 8])
+        self.attention2 = torchvision.models.swin_transformer.SwinTransformerBlock(channels, 6, shift_size=[4, 4], window_size=[8, 8])
+        self.attention3 = torchvision.models.swin_transformer.SwinTransformerBlock(channels, 6, shift_size=[0, 0], window_size=[8, 8])
+        self.attention4 = torchvision.models.swin_transformer.SwinTransformerBlock(channels, 6, shift_size=[4, 4], window_size=[8, 8])
+
+    def forward(self, x):
+        x = x.permute(0, 2, 3, 1)
+        x = self.attention1(x)
+        x = self.attention2(x)
+        x = self.attention3(x)
+        x = self.attention4(x)
+        x = x.permute(0, 3, 1, 2)
+        return x
+
 class VectorQuantizer(torch.nn.Module):
     def __init__(self, features, symbols):
         super().__init__()
@@ -173,6 +190,7 @@ class Autoencoder(torch.nn.Module):
         self.hyper_quantizer = ProductQuantizer(192, 6, 256)
         self.decoder = Decoder(192 * 2)
         self.hyper_decoder = HyperDecoder(192)
+        self.context = Context(192 * 2)
 
     def forward(self, x):
         x = self.encoder(x)
@@ -184,7 +202,7 @@ class Autoencoder(torch.nn.Module):
         x = x.permute(0, 3, 1, 2)
         y = y.permute(0, 3, 1, 2)
         y = self.hyper_decoder(y)
-        x = self.decoder(torch.cat([x, y], dim=1))
+        x = self.decoder(self.context(torch.cat([x, y], dim=1)))
         return x, x_error + y_error
 
 class Dataset(torch.utils.data.Dataset):

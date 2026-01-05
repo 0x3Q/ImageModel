@@ -27,12 +27,12 @@ class LowerBoundParameter(torch.nn.Module):
         self,
         value,
         minimum = 0.0,
-        epsilon = 2 ** -18,
+        epsilon = 1e-6,
     ):
         super().__init__()
         self.register_buffer("minimum", torch.tensor((minimum + epsilon ** 2) ** 0.5))
         self.register_buffer("epsilon", torch.tensor(epsilon ** 2))
-        self.value = torch.nn.Parameter(torch.sqrt(torch.max(value + self.epsilon, self.epsilon)))
+        self.value = torch.nn.Parameter(torch.sqrt(value + self.epsilon))
 
     def forward(self):
         return LowerBoundFunction.apply(self.value, self.minimum) ** 2 - self.epsilon
@@ -44,13 +44,13 @@ class GDN(torch.nn.Module):
         inverse = False,
         minimum = 1e-6,
         origin = 0.1,
-        epsilon = 2 ** -18,
+        epsilon = 1e-6,
     ):
         super().__init__()
         self.inverse = inverse
         self.channels = channels
         self.biases = LowerBoundParameter(torch.ones(channels), minimum=minimum, epsilon=epsilon)
-        self.weights = LowerBoundParameter(origin * torch.eye(channels), epsilon=epsilon)
+        self.weights = LowerBoundParameter(origin * torch.eye(channels), minimum=0.0, epsilon=epsilon)
 
     def forward(self, x):
         biases = self.biases()

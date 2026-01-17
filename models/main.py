@@ -5,11 +5,14 @@ import torchvision
 import torchmetrics
 
 DATASET_DIRECTORY="images"
-MODEL_TRAINING_EPOCHS = 100000
-MODEL_TRAINING_BATCH_SIZE = 32
-MODEL_TRAINING_LEARNING_RATE = 1e-4
-MODEL_TESTING_BATCH_SIZE = 32
-MODEL_TESTING_EPOCHS_INTERVAL = 10
+DATASET_IMAGE_WIDTH=256
+DATASET_IMAGE_HEIGHT=256
+DATASET_IMAGE_PIXELS=DATASET_IMAGE_WIDTH * DATASET_IMAGE_HEIGHT
+MODEL_EPOCHS=100000
+MODEL_BATCH_SIZE=16
+MODEL_LEARNING_RATE=1e-4
+MODEL_TESTING_INTERVAL=10
+MODEL_LAGRANGE_MULTIPLIER=1e-2
 
 class LowerBoundFunction(torch.autograd.Function):
     @staticmethod
@@ -20,7 +23,12 @@ class LowerBoundFunction(torch.autograd.Function):
     @staticmethod
     def backward(context, gradient):
         x, minimum = context.saved_tensors
-        return torch.where((x >= minimum) | (gradient < 0.0), gradient, 0.0), None
+        return gradient * ((x >= minimum) | (gradient < 0.0)).float(), None
+
+class NegativeLogarithmFunction:
+    @staticmethod
+    def apply(x, epsilon):
+        return -LowerBoundFunction.apply(x, epsilon).log2()
 
 class LowerBoundParameter(torch.nn.Module):
     def __init__(
@@ -30,9 +38,9 @@ class LowerBoundParameter(torch.nn.Module):
         epsilon = 1e-6,
     ):
         super().__init__()
-        self.register_buffer("minimum", torch.tensor((minimum + epsilon ** 2) ** 0.5))
-        self.register_buffer("epsilon", torch.tensor(epsilon ** 2))
+        self.epsilon = torch.nn.parameter.Buffer(torch.tensor(epsilon ** 2))
         self.value = torch.nn.Parameter(torch.sqrt(value + self.epsilon))
+        self.minimum = torch.nn.parameter.Buffer(torch.tensor((minimum + epsilon ** 2) ** 0.5))
 
     def forward(self):
         return LowerBoundFunction.apply(self.value, self.minimum) ** 2 - self.epsilon
@@ -49,27 +57,34 @@ class GDN(torch.nn.Module):
         super().__init__()
         self.inverse = inverse
         self.channels = channels
-        self.biases = LowerBoundParameter(torch.ones(channels), minimum=minimum, epsilon=epsilon)
-        self.weights = LowerBoundParameter(origin * torch.eye(channels), minimum=0.0, epsilon=epsilon)
+        self.beta = LowerBoundParameter(torch.ones(channels), minimum=minimum, epsilon=epsilon)
+        self.gamma = LowerBoundParameter(origin * torch.eye(channels), minimum=0.0, epsilon=epsilon)
 
     def forward(self, x):
-        biases = self.biases()
-        weights = self.weights().view(self.channels, self.channels, 1, 1)
-        output = torch.nn.functional.conv2d(x ** 2, weights, biases)
+        beta = self.beta()
+        gamma = self.gamma().view(self.channels, self.channels, 1, 1)
+        output = torch.nn.functional.conv2d(x ** 2, gamma, beta)
         if self.inverse:
             return x * torch.sqrt(output)
         else:
             return x * torch.rsqrt(output)
 
 class Encoder(torch.nn.Module):
-    def __init__(self, channels):
+    def __init__(
+        self,
+        features,
+        channels,
+        minimum=1e-6,
+        origin=0.1,
+        epsilon=1e-6,
+    ):
         super().__init__()
-        self.convolution1 = torch.nn.Conv2d(3, channels, kernel_size=5, stride=2, padding=2)
-        self.activation1 = GDN(channels, inverse=False)
+        self.convolution1 = torch.nn.Conv2d(features, channels, kernel_size=5, stride=2, padding=2)
+        self.activation1 = GDN(channels, minimum=minimum, origin=origin, epsilon=epsilon)
         self.convolution2 = torch.nn.Conv2d(channels, channels, kernel_size=5, stride=2, padding=2)
-        self.activation2 = GDN(channels, inverse=False)
+        self.activation2 = GDN(channels, minimum=minimum, origin=origin, epsilon=epsilon)
         self.convolution3 = torch.nn.Conv2d(channels, channels, kernel_size=5, stride=2, padding=2)
-        self.activation3 = GDN(channels, inverse=False)
+        self.activation3 = GDN(channels, minimum=minimum, origin=origin, epsilon=epsilon)
         self.convolution4 = torch.nn.Conv2d(channels, channels, kernel_size=5, stride=2, padding=2)
 
     def forward(self, x):
@@ -85,125 +100,114 @@ class Encoder(torch.nn.Module):
 class HyperEncoder(torch.nn.Module):
     def __init__(self, channels):
         super().__init__()
-        self.activation = torch.nn.LeakyReLU()
         self.convolution1 = torch.nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1)
+        self.activation1 = torch.nn.ReLU()
         self.convolution2 = torch.nn.Conv2d(channels, channels, kernel_size=5, stride=2, padding=2)
+        self.activation2 = torch.nn.ReLU()
         self.convolution3 = torch.nn.Conv2d(channels, channels, kernel_size=5, stride=2, padding=2)
 
     def forward(self, x):
         x = self.convolution1(x)
-        x = self.activation(x)
+        x = self.activation1(x)
         x = self.convolution2(x)
-        x = self.activation(x)
+        x = self.activation2(x)
         x = self.convolution3(x)
         return x
 
 class Decoder(torch.nn.Module):
-    def __init__(self, channels):
+    def __init__(
+        self,
+        channels,
+        features,
+        minimum=1e-6,
+        origin=0.1,
+        epsilon=1e-6,
+    ):
         super().__init__()
-        self.deconvolution1 = torch.nn.ConvTranspose2d(channels, channels, kernel_size=5, stride=2, padding=2, output_padding=1)
-        self.activation1 = GDN(channels, inverse=True)
-        self.deconvolution2 = torch.nn.ConvTranspose2d(channels, channels, kernel_size=5, stride=2, padding=2, output_padding=1)
-        self.activation2 = GDN(channels, inverse=True)
-        self.deconvolution3 = torch.nn.ConvTranspose2d(channels, channels, kernel_size=5, stride=2, padding=2, output_padding=1)
-        self.activation3 = GDN(channels, inverse=True)
-        self.deconvolution4 = torch.nn.ConvTranspose2d(channels, 3, kernel_size=5, stride=2, padding=2, output_padding=1)
+        self.convolution1 = torch.nn.ConvTranspose2d(channels, channels, kernel_size=5, stride=2, padding=2, output_padding=1)
+        self.activation1 = GDN(channels, inverse=True, minimum=minimum, origin=origin, epsilon=epsilon)
+        self.convolution2 = torch.nn.ConvTranspose2d(channels, channels, kernel_size=5, stride=2, padding=2, output_padding=1)
+        self.activation2 = GDN(channels, inverse=True, minimum=minimum, origin=origin, epsilon=epsilon)
+        self.convolution3 = torch.nn.ConvTranspose2d(channels, channels, kernel_size=5, stride=2, padding=2, output_padding=1)
+        self.activation3 = GDN(channels, inverse=True, minimum=minimum, origin=origin, epsilon=epsilon)
+        self.convolution4 = torch.nn.ConvTranspose2d(channels, features, kernel_size=5, stride=2, padding=2, output_padding=1)
 
     def forward(self, x):
-        x = self.deconvolution1(x)
+        x = self.convolution1(x)
         x = self.activation1(x)
-        x = self.deconvolution2(x)
+        x = self.convolution2(x)
         x = self.activation2(x)
-        x = self.deconvolution3(x)
+        x = self.convolution3(x)
         x = self.activation3(x)
-        x = self.deconvolution4(x)
+        x = self.convolution4(x)
         return x
 
 class HyperDecoder(torch.nn.Module):
     def __init__(self, channels):
         super().__init__()
-        self.activation = torch.nn.LeakyReLU()
-        self.deconvolution1 = torch.nn.ConvTranspose2d(channels, channels, kernel_size=5, stride=2, padding=2, output_padding=1)
-        self.deconvolution2 = torch.nn.ConvTranspose2d(channels, channels, kernel_size=5, stride=2, padding=2, output_padding=1)
-        self.deconvolution3 = torch.nn.ConvTranspose2d(channels, channels, kernel_size=3, stride=1, padding=1)
+        self.convolution1 = torch.nn.ConvTranspose2d(channels, channels, kernel_size=5, stride=2, padding=2, output_padding=1)
+        self.activation1 = torch.nn.ReLU()
+        self.convolution2 = torch.nn.ConvTranspose2d(channels, channels, kernel_size=5, stride=2, padding=2, output_padding=1)
+        self.activation2 = torch.nn.ReLU()
+        self.convolution3 = torch.nn.ConvTranspose2d(channels, channels * 2, kernel_size=3, stride=1, padding=1, output_padding=0)
 
     def forward(self, x):
-        x = self.deconvolution1(x)
-        x = self.activation(x)
-        x = self.deconvolution2(x)
-        x = self.activation(x)
-        x = self.deconvolution3(x)
+        x = self.convolution1(x)
+        x = self.activation1(x)
+        x = self.convolution2(x)
+        x = self.activation2(x)
+        x = self.convolution3(x)
         return x
 
-class Context(torch.nn.Module):
-    def __init__(self, channels):
-        super().__init__()
-        self.attention1 = torchvision.models.swin_transformer.SwinTransformerBlock(channels, 6, shift_size=[0, 0], window_size=[8, 8])
-        self.attention2 = torchvision.models.swin_transformer.SwinTransformerBlock(channels, 6, shift_size=[4, 4], window_size=[8, 8])
-        self.attention3 = torchvision.models.swin_transformer.SwinTransformerBlock(channels, 6, shift_size=[0, 0], window_size=[8, 8])
-        self.attention4 = torchvision.models.swin_transformer.SwinTransformerBlock(channels, 6, shift_size=[4, 4], window_size=[8, 8])
-
+class Quantizer(torch.nn.Module):
     def forward(self, x):
-        x = x.permute(0, 2, 3, 1)
-        x = self.attention1(x)
-        x = self.attention2(x)
-        x = self.attention3(x)
-        x = self.attention4(x)
-        x = x.permute(0, 3, 1, 2)
-        return x
+        if self.training:
+            return x + torch.empty_like(x).uniform_(-0.5, 0.5)
+        else:
+            return x.round()
 
-class VectorQuantizer(torch.nn.Module):
-    def __init__(self, features, symbols):
+class RateLoss(torch.nn.Module):
+    def __init__(self, epsilon=1e-6):
         super().__init__()
-        self.symbols = torch.nn.Embedding(symbols, features)
-        self.symbols.weight.data.uniform_(-1.0 / symbols, 1.0 / symbols)
+        self.epsilon = torch.nn.parameter.Buffer(torch.tensor(epsilon))
 
-    def forward(self, x):
-        distances = self.get_squared_distances(x, self.symbols.weight.permute(1, 0))
-        symbols = self.symbols(distances.argmin(dim=-1))
-        deviation = torch.nn.functional.mse_loss(symbols, x.detach()) + torch.nn.functional.mse_loss(x, symbols.detach()) * 0.25
-        return x + (symbols - x).detach(), deviation
+    def forward(self, x, means, scales):
+        upper = self.get_gaussian_cumulative(x + 0.5, means, scales)
+        lower = self.get_gaussian_cumulative(x - 0.5, means, scales)
+        return NegativeLogarithmFunction.apply(upper - lower, self.epsilon).sum(dim=[1, 2, 3])
 
-    def get_squared_distances(self, x, y):
-        return torch.sum(x ** 2, dim=-1, keepdim=True) + torch.sum(y ** 2, dim=-2, keepdim=True) - torch.matmul(x, y) * 2.0
-
-class ProductQuantizer(torch.nn.Module):
-    def __init__(self, features, splits, symbols):
-        super().__init__()
-        self.quantizers = torch.nn.ModuleList(VectorQuantizer(features // splits, symbols) for _ in range(splits))
-
-    def forward(self, x):
-        outputs = self.get_outputs_from_quantizers(x, len(self.quantizers))
-        errors = [error for _, error in outputs]
-        symbols = [symbol for symbol, _ in outputs]
-        return torch.cat(symbols, dim=-1), sum(errors)
-
-    def get_outputs_from_quantizers(self, x, chunks):
-        return [quantizer(x) for x, quantizer in zip(torch.chunk(x, chunks, dim=-1), self.quantizers)]
+    def get_gaussian_cumulative(self, x, means, scales):
+        return torch.special.ndtr((x - means) / LowerBoundFunction.apply(scales, self.epsilon))
 
 class Autoencoder(torch.nn.Module):
-    def __init__(self):
+    def __init__(
+        self,
+        features=3,
+        channels=192,
+        minimum=1e-6,
+        origin=0.1,
+        epsilon=1e-6,
+    ):
         super().__init__()
-        self.encoder = Encoder(192)
-        self.hyper_encoder = HyperEncoder(192)
-        self.quantizer = ProductQuantizer(192, 6, 256)
-        self.hyper_quantizer = ProductQuantizer(192, 6, 256)
-        self.decoder = Decoder(192 * 2)
-        self.hyper_decoder = HyperDecoder(192)
-        self.context = Context(192 * 2)
+        self.encoder = Encoder(features, channels, minimum=minimum, origin=origin, epsilon=epsilon)
+        self.hyper_encoder = HyperEncoder(channels)
+        self.quantizer = Quantizer()
+        self.hyper_decoder = HyperDecoder(channels)
+        self.decoder = Decoder(channels, features, minimum=minimum, origin=origin, epsilon=epsilon)
+        self.rate_loss = RateLoss(epsilon=epsilon)
+        self.hyper_means = torch.nn.Parameter(torch.zeros([channels, 1, 1]))
+        self.hyper_scales = torch.nn.Parameter(torch.ones([channels, 1, 1]))
 
     def forward(self, x):
         x = self.encoder(x)
         y = self.hyper_encoder(x)
-        x = x.permute(0, 2, 3, 1)
-        y = y.permute(0, 2, 3, 1)
-        x, x_error = self.quantizer(x)
-        y, y_error = self.hyper_quantizer(y)
-        x = x.permute(0, 3, 1, 2)
-        y = y.permute(0, 3, 1, 2)
-        y = self.hyper_decoder(y)
-        x = self.decoder(self.context(torch.cat([x, y], dim=1)))
-        return x, x_error + y_error
+        x = self.quantizer(x)
+        y = self.quantizer(y)
+        y_bits = self.rate_loss(y, self.hyper_means, self.hyper_scales)
+        means, scales = self.hyper_decoder(y).chunk(2, dim=1)
+        x_bits = self.rate_loss(x, means, scales)
+        x = self.decoder(x)
+        return x, x_bits + y_bits
 
 class Dataset(torch.utils.data.Dataset):
     def __init__(self, directory):
@@ -224,32 +228,38 @@ class Dataset(torch.utils.data.Dataset):
 
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    dataset = Dataset(DATASET_DIRECTORY)
     model = Autoencoder().to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), MODEL_TRAINING_LEARNING_RATE)
-    criterion = torch.nn.MSELoss()
+    bpp_metric = torchmetrics.MeanMetric().to(device)
+    psnr_metric = torchmetrics.image.PeakSignalNoiseRatio(1.0).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), MODEL_LEARNING_RATE)
+    dataset = Dataset(DATASET_DIRECTORY)
     testing_dataset, training_dataset = torch.utils.data.random_split(dataset, [0.2, 0.8])
-    testing_batches = torch.utils.data.DataLoader(testing_dataset, batch_size=MODEL_TESTING_BATCH_SIZE, shuffle=False)
-    training_batches = torch.utils.data.DataLoader(training_dataset, batch_size=MODEL_TRAINING_BATCH_SIZE, shuffle=True)
-    metrics = torchmetrics.image.PeakSignalNoiseRatio(1.0).to(device)
+    testing_batches = torch.utils.data.DataLoader(testing_dataset, batch_size=MODEL_BATCH_SIZE, shuffle=False)
+    training_batches = torch.utils.data.DataLoader(training_dataset, batch_size=MODEL_BATCH_SIZE, shuffle=True)
 
-    for epoch in range(1, MODEL_TRAINING_EPOCHS + 1):
+    for epoch in range(1, MODEL_EPOCHS + 1):
         model.train()
-        metrics.reset()
+        bpp_metric.reset()
+        psnr_metric.reset()
         for samples in training_batches:
             samples = samples.to(device)
-            outputs, error = model(samples)
-            (error + criterion(outputs, samples)).backward()
+            outputs, bits = model(samples)
+            rate_loss = bits.mean() / DATASET_IMAGE_PIXELS
+            distortion_loss = torch.nn.functional.mse_loss(outputs, samples) * DATASET_IMAGE_PIXELS
+            (rate_loss + distortion_loss * MODEL_LAGRANGE_MULTIPLIER).backward()
             optimizer.step()
             optimizer.zero_grad()
-            metrics.update(outputs, samples)
-        print(f"[EPOCH {epoch}]: PSNR: {metrics.compute().item():.3f}")
-        if epoch % MODEL_TESTING_EPOCHS_INTERVAL == 0:
+            bpp_metric.update(bits / DATASET_IMAGE_PIXELS)
+            psnr_metric.update(outputs, samples)
+        print(f"[EPOCH {epoch}]: BPP: {bpp_metric.compute().item():.5f} PSNR: {psnr_metric.compute().item():.3f}")
+        if epoch % MODEL_TESTING_INTERVAL == 0:
             model.eval()
-            metrics.reset()
+            bpp_metric.reset()
+            psnr_metric.reset()
             with torch.no_grad():
                 for samples in testing_batches:
                     samples = samples.to(device)
-                    outputs, _ = model(samples)
-                    metrics.update(outputs, samples)
-                print(f"[EPOCH {epoch} - TESTING]: PSNR: {metrics.compute().item():.3f}")
+                    outputs, bits = model(samples)
+                    bpp_metric.update(bits / DATASET_IMAGE_PIXELS)
+                    psnr_metric.update(outputs, samples)
+                print(f"[EPOCH {epoch} - TESTING]: BPP: {bpp_metric.compute().item():.5f} PSNR: {psnr_metric.compute().item():.3f}")

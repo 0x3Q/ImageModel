@@ -13,6 +13,7 @@ MODEL_BATCH_SIZE = 16
 MODEL_LEARNING_RATE = 1e-4
 MODEL_TESTING_INTERVAL = 10
 MODEL_LAGRANGE_MULTIPLIER = 1e-2
+MODEL_GRADIENT_CLIPPING_THRESHOLD = 1.0
 
 class LowerBoundFunction(torch.autograd.Function):
     @staticmethod
@@ -232,7 +233,7 @@ if __name__ == "__main__":
     model = Autoencoder().to(device)
     bpp_metric = torchmetrics.MeanMetric().to(device)
     psnr_metric = torchmetrics.image.PeakSignalNoiseRatio(1.0).to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), MODEL_LEARNING_RATE)
+    optimizer = torch.optim.Adam(model.parameters(), MODEL_LEARNING_RATE)
     dataset = Dataset(DATASET_DIRECTORY, patch_size=DATASET_PATCH_SIZE)
     testing_dataset, training_dataset = torch.utils.data.random_split(dataset, [0.2, 0.8])
     testing_batches = torch.utils.data.DataLoader(testing_dataset, batch_size=MODEL_BATCH_SIZE, shuffle=False)
@@ -248,6 +249,7 @@ if __name__ == "__main__":
             rate_loss = bits.mean() / DATASET_PATCH_PIXELS
             distortion_loss = torch.nn.functional.mse_loss(outputs, samples) * DATASET_PATCH_PIXELS
             (rate_loss + distortion_loss * MODEL_LAGRANGE_MULTIPLIER).backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), MODEL_GRADIENT_CLIPPING_THRESHOLD)
             optimizer.step()
             optimizer.zero_grad()
             bpp_metric.update(bits / DATASET_PATCH_PIXELS)

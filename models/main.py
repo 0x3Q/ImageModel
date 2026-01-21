@@ -4,15 +4,15 @@ import torch
 import torchvision
 import torchmetrics
 
-DATASET_DIRECTORY="images"
-DATASET_IMAGE_WIDTH=256
-DATASET_IMAGE_HEIGHT=256
-DATASET_IMAGE_PIXELS=DATASET_IMAGE_WIDTH * DATASET_IMAGE_HEIGHT
-MODEL_EPOCHS=100000
-MODEL_BATCH_SIZE=16
-MODEL_LEARNING_RATE=1e-4
-MODEL_TESTING_INTERVAL=10
-MODEL_LAGRANGE_MULTIPLIER=1e-2
+DATASET_DIRECTORY = "images"
+DATASET_PATCH_SIZE = 256
+DATASET_PATCH_PIXELS = DATASET_PATCH_SIZE * DATASET_PATCH_SIZE
+DATASET_PATCH_SCALING = 1.0 / 255.0
+MODEL_EPOCHS = 100000
+MODEL_BATCH_SIZE = 16
+MODEL_LEARNING_RATE = 1e-4
+MODEL_TESTING_INTERVAL = 10
+MODEL_LAGRANGE_MULTIPLIER = 1e-2
 
 class LowerBoundFunction(torch.autograd.Function):
     @staticmethod
@@ -74,9 +74,9 @@ class Encoder(torch.nn.Module):
         self,
         features,
         channels,
-        minimum=1e-6,
-        origin=0.1,
-        epsilon=1e-6,
+        minimum = 1e-6,
+        origin = 0.1,
+        epsilon = 1e-6,
     ):
         super().__init__()
         self.convolution1 = torch.nn.Conv2d(features, channels, kernel_size=5, stride=2, padding=2)
@@ -119,9 +119,9 @@ class Decoder(torch.nn.Module):
         self,
         channels,
         features,
-        minimum=1e-6,
-        origin=0.1,
-        epsilon=1e-6,
+        minimum = 1e-6,
+        origin = 0.1,
+        epsilon = 1e-6,
     ):
         super().__init__()
         self.convolution1 = torch.nn.ConvTranspose2d(channels, channels, kernel_size=5, stride=2, padding=2, output_padding=1)
@@ -182,11 +182,11 @@ class RateLoss(torch.nn.Module):
 class Autoencoder(torch.nn.Module):
     def __init__(
         self,
-        features=3,
-        channels=192,
-        minimum=1e-6,
-        origin=0.1,
-        epsilon=1e-6,
+        features = 3,
+        channels = 192,
+        minimum = 1e-6,
+        origin = 0.1,
+        epsilon = 1e-6,
     ):
         super().__init__()
         self.encoder = Encoder(features, channels, minimum=minimum, origin=origin, epsilon=epsilon)
@@ -210,21 +210,22 @@ class Autoencoder(torch.nn.Module):
         return x, x_bits + y_bits
 
 class Dataset(torch.utils.data.Dataset):
-    def __init__(self, directory):
+    def __init__(self, directory, patch_size):
         self.images = []
+        self.random_crop = torchvision.transforms.RandomCrop(patch_size)
+        self.random_flip = torchvision.transforms.RandomHorizontalFlip()
         for root, _, files in os.walk(directory):
             for file in files:
-                if file.lower().endswith((".png", ".jpg", "jpeg")):
-                    path = os.path.join(root, file)
+                if file.lower().endswith((".png", ".jpg", ".jpeg")):
                     self.images.append(
-                        torchvision.io.decode_image(path, mode="RGB").float() / 255.0
+                        torchvision.io.read_image(os.path.join(root, file))
                     )
 
     def __len__(self):
         return len(self.images)
 
     def __getitem__(self, index):
-        return self.images[index]
+        return self.random_flip(self.random_crop(self.images[index]))
 
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -232,7 +233,7 @@ if __name__ == "__main__":
     bpp_metric = torchmetrics.MeanMetric().to(device)
     psnr_metric = torchmetrics.image.PeakSignalNoiseRatio(1.0).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), MODEL_LEARNING_RATE)
-    dataset = Dataset(DATASET_DIRECTORY)
+    dataset = Dataset(DATASET_DIRECTORY, patch_size=DATASET_PATCH_SIZE)
     testing_dataset, training_dataset = torch.utils.data.random_split(dataset, [0.2, 0.8])
     testing_batches = torch.utils.data.DataLoader(testing_dataset, batch_size=MODEL_BATCH_SIZE, shuffle=False)
     training_batches = torch.utils.data.DataLoader(training_dataset, batch_size=MODEL_BATCH_SIZE, shuffle=True)
@@ -242,14 +243,14 @@ if __name__ == "__main__":
         bpp_metric.reset()
         psnr_metric.reset()
         for samples in training_batches:
-            samples = samples.to(device)
+            samples = samples.to(device).float() * DATASET_PATCH_SCALING
             outputs, bits = model(samples)
-            rate_loss = bits.mean() / DATASET_IMAGE_PIXELS
-            distortion_loss = torch.nn.functional.mse_loss(outputs, samples) * DATASET_IMAGE_PIXELS
+            rate_loss = bits.mean() / DATASET_PATCH_PIXELS
+            distortion_loss = torch.nn.functional.mse_loss(outputs, samples) * DATASET_PATCH_PIXELS
             (rate_loss + distortion_loss * MODEL_LAGRANGE_MULTIPLIER).backward()
             optimizer.step()
             optimizer.zero_grad()
-            bpp_metric.update(bits / DATASET_IMAGE_PIXELS)
+            bpp_metric.update(bits / DATASET_PATCH_PIXELS)
             psnr_metric.update(outputs, samples)
         print(f"[EPOCH {epoch}]: BPP: {bpp_metric.compute().item():.5f} PSNR: {psnr_metric.compute().item():.3f}")
         if epoch % MODEL_TESTING_INTERVAL == 0:
@@ -258,8 +259,8 @@ if __name__ == "__main__":
             psnr_metric.reset()
             with torch.no_grad():
                 for samples in testing_batches:
-                    samples = samples.to(device)
+                    samples = samples.to(device).float() * DATASET_PATCH_SCALING
                     outputs, bits = model(samples)
-                    bpp_metric.update(bits / DATASET_IMAGE_PIXELS)
+                    bpp_metric.update(bits / DATASET_PATCH_PIXELS)
                     psnr_metric.update(outputs, samples)
                 print(f"[EPOCH {epoch} - TESTING]: BPP: {bpp_metric.compute().item():.5f} PSNR: {psnr_metric.compute().item():.3f}")

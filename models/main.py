@@ -70,11 +70,42 @@ class GDN(torch.nn.Module):
         else:
             return x * torch.rsqrt(output)
 
+class Experts(torch.nn.Module):
+    def __init__(self, channels, experts):
+        super().__init__()
+        self.convolution1 = torch.nn.Conv1d(channels * experts, channels * experts, kernel_size=1, groups=experts)
+        self.activation1 = torch.nn.LeakyReLU()
+        self.convolution2 = torch.nn.Conv1d(channels * experts, channels * experts, kernel_size=1, groups=experts)
+
+    def forward(self, x):
+        x = self.convolution1(x)
+        x = self.activation1(x)
+        x = self.convolution2(x)
+        return x
+
+class MoE(torch.nn.Module):
+    def __init__(self, channels, experts):
+        super().__init__()
+        self.experts = Experts(channels, experts=experts)
+        self.scaling = channels ** -0.5
+        self.weights = torch.nn.Conv2d(channels, experts, kernel_size=1, bias=False)
+
+    def forward(self, x):
+        weights = self.weights(x) * self.scaling
+        outputs = torch.einsum("BCHW, BEHW -> BEC", x, self.get_dispatch_weights(weights))
+        outputs = self.experts(outputs.flatten(1).unsqueeze(2)).view_as(outputs)
+        outputs = torch.einsum("BEC, BEHW -> BCHW", outputs, torch.softmax(weights, dim=1))
+        return outputs
+
+    def get_dispatch_weights(self, weights):
+        return torch.softmax(weights.flatten(2), dim=2).view_as(weights)
+
 class Encoder(torch.nn.Module):
     def __init__(
         self,
         features,
         channels,
+        experts,
         minimum = 1e-6,
         origin = 0.1,
         epsilon = 1e-6,
@@ -82,36 +113,46 @@ class Encoder(torch.nn.Module):
         super().__init__()
         self.convolution1 = torch.nn.Conv2d(features, channels, kernel_size=5, stride=2, padding=2)
         self.activation1 = GDN(channels, minimum=minimum, origin=origin, epsilon=epsilon)
+        self.experts1 = MoE(channels, experts=experts)
         self.convolution2 = torch.nn.Conv2d(channels, channels, kernel_size=5, stride=2, padding=2)
         self.activation2 = GDN(channels, minimum=minimum, origin=origin, epsilon=epsilon)
+        self.experts2 = MoE(channels, experts=experts)
         self.convolution3 = torch.nn.Conv2d(channels, channels, kernel_size=5, stride=2, padding=2)
         self.activation3 = GDN(channels, minimum=minimum, origin=origin, epsilon=epsilon)
+        self.experts3 = MoE(channels, experts=experts)
         self.convolution4 = torch.nn.Conv2d(channels, channels, kernel_size=5, stride=2, padding=2)
 
     def forward(self, x):
         x = self.convolution1(x)
         x = self.activation1(x)
+        x = x + self.experts1(x)
         x = self.convolution2(x)
         x = self.activation2(x)
+        x = x + self.experts2(x)
         x = self.convolution3(x)
         x = self.activation3(x)
+        x = x + self.experts3(x)
         x = self.convolution4(x)
         return x
 
 class HyperEncoder(torch.nn.Module):
-    def __init__(self, channels):
+    def __init__(self, channels, experts):
         super().__init__()
         self.convolution1 = torch.nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1)
         self.activation1 = torch.nn.ReLU()
+        self.experts1 = MoE(channels, experts=experts)
         self.convolution2 = torch.nn.Conv2d(channels, channels, kernel_size=5, stride=2, padding=2)
         self.activation2 = torch.nn.ReLU()
+        self.experts2 = MoE(channels, experts=experts)
         self.convolution3 = torch.nn.Conv2d(channels, channels, kernel_size=5, stride=2, padding=2)
 
     def forward(self, x):
         x = self.convolution1(x)
         x = self.activation1(x)
+        x = x + self.experts1(x)
         x = self.convolution2(x)
         x = self.activation2(x)
+        x = x + self.experts2(x)
         x = self.convolution3(x)
         return x
 
@@ -120,6 +161,7 @@ class Decoder(torch.nn.Module):
         self,
         channels,
         features,
+        experts,
         minimum = 1e-6,
         origin = 0.1,
         epsilon = 1e-6,
@@ -127,36 +169,46 @@ class Decoder(torch.nn.Module):
         super().__init__()
         self.convolution1 = torch.nn.ConvTranspose2d(channels, channels, kernel_size=5, stride=2, padding=2, output_padding=1)
         self.activation1 = GDN(channels, inverse=True, minimum=minimum, origin=origin, epsilon=epsilon)
+        self.experts1 = MoE(channels, experts=experts)
         self.convolution2 = torch.nn.ConvTranspose2d(channels, channels, kernel_size=5, stride=2, padding=2, output_padding=1)
         self.activation2 = GDN(channels, inverse=True, minimum=minimum, origin=origin, epsilon=epsilon)
+        self.experts2 = MoE(channels, experts=experts)
         self.convolution3 = torch.nn.ConvTranspose2d(channels, channels, kernel_size=5, stride=2, padding=2, output_padding=1)
         self.activation3 = GDN(channels, inverse=True, minimum=minimum, origin=origin, epsilon=epsilon)
+        self.experts3 = MoE(channels, experts=experts)
         self.convolution4 = torch.nn.ConvTranspose2d(channels, features, kernel_size=5, stride=2, padding=2, output_padding=1)
 
     def forward(self, x):
         x = self.convolution1(x)
         x = self.activation1(x)
+        x = x + self.experts1(x)
         x = self.convolution2(x)
         x = self.activation2(x)
+        x = x + self.experts2(x)
         x = self.convolution3(x)
         x = self.activation3(x)
+        x = x + self.experts3(x)
         x = self.convolution4(x)
         return x
 
 class HyperDecoder(torch.nn.Module):
-    def __init__(self, channels):
+    def __init__(self, channels, experts):
         super().__init__()
         self.convolution1 = torch.nn.ConvTranspose2d(channels, channels, kernel_size=5, stride=2, padding=2, output_padding=1)
         self.activation1 = torch.nn.ReLU()
+        self.experts1 = MoE(channels, experts=experts)
         self.convolution2 = torch.nn.ConvTranspose2d(channels, channels, kernel_size=5, stride=2, padding=2, output_padding=1)
         self.activation2 = torch.nn.ReLU()
+        self.experts2 = MoE(channels, experts=experts)
         self.convolution3 = torch.nn.ConvTranspose2d(channels, channels * 2, kernel_size=3, stride=1, padding=1, output_padding=0)
 
     def forward(self, x):
         x = self.convolution1(x)
         x = self.activation1(x)
+        x = x + self.experts1(x)
         x = self.convolution2(x)
         x = self.activation2(x)
+        x = x + self.experts2(x)
         x = self.convolution3(x)
         return x
 
@@ -185,16 +237,17 @@ class Autoencoder(torch.nn.Module):
         self,
         features = 3,
         channels = 192,
+        experts = 16,
         minimum = 1e-6,
         origin = 0.1,
         epsilon = 1e-6,
     ):
         super().__init__()
-        self.encoder = Encoder(features, channels, minimum=minimum, origin=origin, epsilon=epsilon)
-        self.hyper_encoder = HyperEncoder(channels)
+        self.encoder = Encoder(features, channels, experts=experts, minimum=minimum, origin=origin, epsilon=epsilon)
+        self.hyper_encoder = HyperEncoder(channels, experts=experts)
         self.quantizer = Quantizer()
-        self.hyper_decoder = HyperDecoder(channels)
-        self.decoder = Decoder(channels, features, minimum=minimum, origin=origin, epsilon=epsilon)
+        self.hyper_decoder = HyperDecoder(channels, experts=experts)
+        self.decoder = Decoder(channels, features, experts=experts, minimum=minimum, origin=origin, epsilon=epsilon)
         self.rate_loss = RateLoss(epsilon=epsilon)
         self.hyper_means = torch.nn.Parameter(torch.zeros([channels, 1, 1]))
         self.hyper_scales = torch.nn.Parameter(torch.ones([channels, 1, 1]))

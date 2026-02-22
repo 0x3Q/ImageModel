@@ -39,9 +39,9 @@ class LowerBoundParameter(torch.nn.Module):
         epsilon = 1e-6,
     ):
         super().__init__()
-        self.epsilon = torch.nn.parameter.Buffer(torch.tensor(epsilon ** 2))
+        self.register_buffer("epsilon", torch.tensor(epsilon ** 2))
         self.value = torch.nn.Parameter(torch.sqrt(value + self.epsilon))
-        self.minimum = torch.nn.parameter.Buffer(torch.tensor((minimum + epsilon ** 2) ** 0.5))
+        self.register_buffer("minimum", torch.tensor((minimum + epsilon ** 2) ** 0.5))
 
     def forward(self):
         return LowerBoundFunction.apply(self.value, self.minimum) ** 2 - self.epsilon
@@ -170,7 +170,7 @@ class Quantizer(torch.nn.Module):
 class RateLoss(torch.nn.Module):
     def __init__(self, epsilon=1e-6):
         super().__init__()
-        self.epsilon = torch.nn.parameter.Buffer(torch.tensor(epsilon))
+        self.register_buffer("epsilon", torch.tensor(epsilon))
 
     def forward(self, x, means, scales):
         upper = self.get_gaussian_cumulative(x + 0.5, means, scales)

@@ -92,13 +92,13 @@ class MoE(torch.nn.Module):
 
     def forward(self, x):
         weights = self.weights(x) * self.scaling
-        outputs = torch.einsum("BCHW, BEHW -> BEC", x, self.get_dispatch_weights(weights))
-        outputs = self.experts(outputs.flatten(1).unsqueeze(2)).view_as(outputs)
+        outputs = torch.einsum("BCHW, BEHW -> BEC", x, torch.softmax(weights.flatten(2), dim=2).view_as(weights))
+        outputs = self.get_experts_outputs(outputs)
         outputs = torch.einsum("BEC, BEHW -> BCHW", outputs, torch.softmax(weights, dim=1))
         return outputs
 
-    def get_dispatch_weights(self, weights):
-        return torch.softmax(weights.flatten(2), dim=2).view_as(weights)
+    def get_experts_outputs(self, outputs):
+        return self.experts(outputs.flatten(1).unsqueeze(2)).view_as(outputs)
 
 class Encoder(torch.nn.Module):
     def __init__(

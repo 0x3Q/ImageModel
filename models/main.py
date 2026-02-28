@@ -139,10 +139,10 @@ class HyperEncoder(torch.nn.Module):
     def __init__(self, channels, experts):
         super().__init__()
         self.convolution1 = torch.nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1)
-        self.activation1 = torch.nn.ReLU()
+        self.activation1 = torch.nn.LeakyReLU()
         self.experts1 = MoE(channels, experts=experts)
         self.convolution2 = torch.nn.Conv2d(channels, channels, kernel_size=5, stride=2, padding=2)
-        self.activation2 = torch.nn.ReLU()
+        self.activation2 = torch.nn.LeakyReLU()
         self.experts2 = MoE(channels, experts=experts)
         self.convolution3 = torch.nn.Conv2d(channels, channels, kernel_size=5, stride=2, padding=2)
 
@@ -195,10 +195,10 @@ class HyperDecoder(torch.nn.Module):
     def __init__(self, channels, experts):
         super().__init__()
         self.convolution1 = torch.nn.ConvTranspose2d(channels, channels, kernel_size=5, stride=2, padding=2, output_padding=1)
-        self.activation1 = torch.nn.ReLU()
+        self.activation1 = torch.nn.LeakyReLU()
         self.experts1 = MoE(channels, experts=experts)
         self.convolution2 = torch.nn.ConvTranspose2d(channels, channels, kernel_size=5, stride=2, padding=2, output_padding=1)
-        self.activation2 = torch.nn.ReLU()
+        self.activation2 = torch.nn.LeakyReLU()
         self.experts2 = MoE(channels, experts=experts)
         self.convolution3 = torch.nn.ConvTranspose2d(channels, channels * 2, kernel_size=3, stride=1, padding=1, output_padding=0)
 

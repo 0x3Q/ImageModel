@@ -219,8 +219,8 @@ class Quantizer(torch.nn.Module):
         else:
             return x.round()
 
-class RateLoss(torch.nn.Module):
-    def __init__(self, epsilon=1e-6):
+class GaussianLikelihood(torch.nn.Module):
+    def __init__(self, epsilon = 1e-6):
         super().__init__()
         self.register_buffer("epsilon", torch.tensor(epsilon))
 
@@ -231,6 +231,50 @@ class RateLoss(torch.nn.Module):
 
     def get_gaussian_cumulative(self, x, means, scales):
         return torch.special.ndtr((x - means) / LowerBoundFunction.apply(scales, self.epsilon))
+
+class FactorizedCumulative(torch.nn.Module):
+    def __init__(
+        self,
+        channels,
+        encoded = 3,
+        decoded = 3,
+        filtered = True,
+    ):
+        super().__init__()
+        self.channels = channels
+        self.biases = torch.nn.Parameter(torch.empty(channels * decoded).uniform_(-0.5, 0.5))
+        self.weights = torch.nn.Parameter(torch.empty(channels * decoded, encoded, 1, 1).fill_(-1.5))
+        self.filtered = filtered
+        if self.filtered:
+            self.factors = torch.nn.Parameter(torch.zeros(1, channels * decoded, 1, 1))
+
+    def forward(self, x):
+        weights = torch.nn.functional.softplus(self.weights)
+        outputs = torch.nn.functional.conv2d(x, weights, self.biases, groups=self.channels)
+        if self.filtered:
+            return outputs + torch.tanh(outputs) * torch.tanh(self.factors)
+        else:
+            return outputs
+
+class FactorizedLikelihood(torch.nn.Module):
+    def __init__(
+        self,
+        channels,
+        epsilon = 1e-6,
+        filters = (True, True, True, False),
+        features = (1, 3, 3, 3, 1),
+    ):
+        super().__init__()
+        self.register_buffer("epsilon", torch.tensor(epsilon))
+        self.factorized_cumulative = torch.nn.Sequential(*self.get_cumulative_modules(channels, filters, features))
+
+    def forward(self, x):
+        upper = self.factorized_cumulative(x + 0.5).sigmoid()
+        lower = self.factorized_cumulative(x - 0.5).sigmoid()
+        return NegativeLogarithmFunction.apply(upper - lower, self.epsilon).sum(dim=[1, 2, 3])
+
+    def get_cumulative_modules(self, channels, filters, features):
+        return [FactorizedCumulative(channels, features[i], features[i + 1], filters[i]) for i in range(len(filters))]
 
 class Autoencoder(torch.nn.Module):
     def __init__(
@@ -248,18 +292,17 @@ class Autoencoder(torch.nn.Module):
         self.quantizer = Quantizer()
         self.hyper_decoder = HyperDecoder(channels, experts=experts)
         self.decoder = Decoder(channels, features, experts=experts, minimum=minimum, origin=origin, epsilon=epsilon)
-        self.rate_loss = RateLoss(epsilon=epsilon)
-        self.hyper_means = torch.nn.Parameter(torch.zeros([channels, 1, 1]))
-        self.hyper_scales = torch.nn.Parameter(torch.ones([channels, 1, 1]))
+        self.gaussian_likelihood = GaussianLikelihood(epsilon=epsilon)
+        self.factorized_likelihood = FactorizedLikelihood(channels, epsilon=epsilon)
 
     def forward(self, x):
         x = self.encoder(x)
         y = self.hyper_encoder(x)
         x = self.quantizer(x)
         y = self.quantizer(y)
-        y_bits = self.rate_loss(y, self.hyper_means, self.hyper_scales)
+        y_bits = self.factorized_likelihood(y)
         means, scales = self.hyper_decoder(y).chunk(2, dim=1)
-        x_bits = self.rate_loss(x, means, scales)
+        x_bits = self.gaussian_likelihood(x, means, scales)
         x = self.decoder(x)
         return x, x_bits + y_bits
 

@@ -11,6 +11,7 @@ DATASET_PATCH_SCALING = 1.0 / 255.0
 MODEL_EPOCHS = 100000
 MODEL_BATCH_SIZE = 16
 MODEL_LEARNING_RATE = 1e-4
+MODEL_SAVING_INTERVAL = 1000
 MODEL_TESTING_INTERVAL = 10
 MODEL_LAGRANGE_MULTIPLIER = 1e-2
 MODEL_GRADIENT_CLIPPING_THRESHOLD = 1.0
@@ -385,6 +386,12 @@ if __name__ == "__main__":
             bpp_metric.update(bits / DATASET_PATCH_PIXELS)
             psnr_metric.update(outputs, samples)
         print(f"[EPOCH {epoch}]: BPP: {bpp_metric.compute().item():.5f} PSNR: {psnr_metric.compute().item():.3f}")
+        if epoch % MODEL_SAVING_INTERVAL == 0:
+            torch.save({
+                "epoch": epoch,
+                "model": model.state_dict(),
+                "optimizer": optimizer.state_dict(),
+            }, f"VAE-{epoch}.pth")
         if epoch % MODEL_TESTING_INTERVAL == 0:
             model.eval()
             bpp_metric.reset()

@@ -4,7 +4,8 @@ import torch
 import torchvision
 import torchmetrics
 
-DATASET_DIRECTORY = "images"
+DATASET_TESTING_DIRECTORY = "images"
+DATASET_TRAINING_DIRECTORY = "..."
 DATASET_PATCH_SIZE = 256
 DATASET_PATCH_PIXELS = DATASET_PATCH_SIZE * DATASET_PATCH_SIZE
 DATASET_PATCH_SCALING = 1.0 / 255.0
@@ -13,6 +14,7 @@ MODEL_BATCH_SIZE = 16
 MODEL_LEARNING_RATE = 1e-4
 MODEL_SAVING_INTERVAL = 1000
 MODEL_TESTING_INTERVAL = 10
+MODEL_TESTING_ITERATIONS = 16
 MODEL_LAGRANGE_MULTIPLIER = 1e-2
 MODEL_GRADIENT_CLIPPING_THRESHOLD = 1.0
 
@@ -365,8 +367,8 @@ if __name__ == "__main__":
     bpp_metric = torchmetrics.MeanMetric().to(device)
     psnr_metric = torchmetrics.image.PeakSignalNoiseRatio(1.0).to(device)
     optimizer = torch.optim.Adam(model.parameters(), MODEL_LEARNING_RATE)
-    dataset = Dataset(DATASET_DIRECTORY, patch_size=DATASET_PATCH_SIZE)
-    testing_dataset, training_dataset = torch.utils.data.random_split(dataset, [0.2, 0.8])
+    testing_dataset = Dataset(DATASET_TESTING_DIRECTORY, patch_size=DATASET_PATCH_SIZE)
+    training_dataset = Dataset(DATASET_TRAINING_DIRECTORY, patch_size=DATASET_PATCH_SIZE)
     testing_batches = torch.utils.data.DataLoader(testing_dataset, batch_size=MODEL_BATCH_SIZE, shuffle=False)
     training_batches = torch.utils.data.DataLoader(training_dataset, batch_size=MODEL_BATCH_SIZE, shuffle=True)
 
@@ -397,9 +399,10 @@ if __name__ == "__main__":
             bpp_metric.reset()
             psnr_metric.reset()
             with torch.no_grad():
-                for samples in testing_batches:
-                    samples = samples.to(device).float() * DATASET_PATCH_SCALING
-                    outputs, bits = model(samples)
-                    bpp_metric.update(bits / DATASET_PATCH_PIXELS)
-                    psnr_metric.update(outputs, samples)
+                for _ in range(MODEL_TESTING_ITERATIONS):
+                    for samples in testing_batches:
+                        samples = samples.to(device).float() * DATASET_PATCH_SCALING
+                        outputs, bits = model(samples)
+                        bpp_metric.update(bits / DATASET_PATCH_PIXELS)
+                        psnr_metric.update(outputs, samples)
                 print(f"[EPOCH {epoch} - TESTING]: BPP: {bpp_metric.compute().item():.5f} PSNR: {psnr_metric.compute().item():.3f}")

@@ -212,6 +212,38 @@ class HyperDecoder(torch.nn.Module):
         x = self.convolution3(x)
         return x
 
+class Context(torch.nn.Conv2d):
+    def __init__(
+        self,
+        channels,
+        expansion = 2,
+        kernel_size = 5,
+    ):
+        super().__init__(channels, channels * expansion, kernel_size=kernel_size, padding=kernel_size // 2)
+        self.register_buffer("mask", torch.ones_like(self.weight.data))
+        self.mask[:, :, kernel_size // 2 + 1:, :] = 0.0
+        self.mask[:, :, kernel_size // 2, kernel_size // 2:] = 0.0
+
+    def forward(self, x):
+        return torch.nn.functional.conv2d(x, self.weight * self.mask, self.bias, self.stride, self.padding)
+
+class Entropy(torch.nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.convolution1 = torch.nn.Conv2d(channels * 6 // 6, channels * 5 // 6, kernel_size=1, stride=1, padding=0)
+        self.activation1 = torch.nn.LeakyReLU()
+        self.convolution2 = torch.nn.Conv2d(channels * 5 // 6, channels * 4 // 6, kernel_size=1, stride=1, padding=0)
+        self.activation2 = torch.nn.LeakyReLU()
+        self.convolution3 = torch.nn.Conv2d(channels * 4 // 6, channels * 3 // 6, kernel_size=1, stride=1, padding=0)
+
+    def forward(self, x, y):
+        x = self.convolution1(torch.cat([x, y], dim=1))
+        x = self.activation1(x)
+        x = self.convolution2(x)
+        x = self.activation2(x)
+        x = self.convolution3(x).chunk(2, dim=1)
+        return x
+
 class Quantizer(torch.nn.Module):
     def forward(self, x):
         if self.training:
@@ -292,6 +324,8 @@ class Autoencoder(torch.nn.Module):
         self.quantizer = Quantizer()
         self.hyper_decoder = HyperDecoder(channels, experts=experts)
         self.decoder = Decoder(channels, features, experts=experts, minimum=minimum, origin=origin, epsilon=epsilon)
+        self.context = Context(channels)
+        self.entropy = Entropy(channels * 4)
         self.gaussian_likelihood = GaussianLikelihood(epsilon=epsilon)
         self.factorized_likelihood = FactorizedLikelihood(channels, epsilon=epsilon)
 
@@ -301,7 +335,7 @@ class Autoencoder(torch.nn.Module):
         x = self.quantizer(x)
         y = self.quantizer(y)
         y_bits = self.factorized_likelihood(y)
-        means, scales = self.hyper_decoder(y).chunk(2, dim=1)
+        means, scales = self.entropy(self.context(x), self.hyper_decoder(y))
         x_bits = self.gaussian_likelihood(x, means, scales)
         x = self.decoder(x)
         return x, x_bits + y_bits

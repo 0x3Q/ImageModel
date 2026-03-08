@@ -12,7 +12,8 @@ DATASET_PATCH_SCALING = 1.0 / 255.0
 MODEL_EPOCHS = 100000
 MODEL_BATCH_SIZE = 16
 MODEL_LEARNING_RATE = 1e-4
-MODEL_SAVING_INTERVAL = 1000
+MODEL_SAVING_INTERVAL = 250
+MODEL_CHECKPOINT_IMPORT = None
 MODEL_TESTING_INTERVAL = 10
 MODEL_TESTING_ITERATIONS = 16
 MODEL_LAGRANGE_MULTIPLIER = 1e-2
@@ -367,12 +368,18 @@ if __name__ == "__main__":
     bpp_metric = torchmetrics.MeanMetric().to(device)
     psnr_metric = torchmetrics.image.PeakSignalNoiseRatio(1.0).to(device)
     optimizer = torch.optim.Adam(model.parameters(), MODEL_LEARNING_RATE)
+    epoch_offset = 0
     testing_dataset = Dataset(DATASET_TESTING_DIRECTORY, patch_size=DATASET_PATCH_SIZE)
     training_dataset = Dataset(DATASET_TRAINING_DIRECTORY, patch_size=DATASET_PATCH_SIZE)
     testing_batches = torch.utils.data.DataLoader(testing_dataset, batch_size=MODEL_BATCH_SIZE, shuffle=False)
     training_batches = torch.utils.data.DataLoader(training_dataset, batch_size=MODEL_BATCH_SIZE, shuffle=True)
 
-    for epoch in range(1, MODEL_EPOCHS + 1):
+    if MODEL_CHECKPOINT_IMPORT is not None:
+        checkpoint = torch.load(MODEL_CHECKPOINT_IMPORT, map_location=device, weights_only=True)
+        epoch_offset = checkpoint["epoch"]
+        model.load_state_dict(checkpoint["model"])
+        optimizer.load_state_dict(checkpoint["optimizer"])
+    for epoch in range(epoch_offset + 1, MODEL_EPOCHS + 1):
         model.train()
         bpp_metric.reset()
         psnr_metric.reset()

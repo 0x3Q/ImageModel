@@ -28,12 +28,12 @@ class LowerBoundFunction(torch.autograd.Function):
     @staticmethod
     def backward(context, gradient):
         x, minimum = context.saved_tensors
-        return gradient * ((x >= minimum) | (gradient < 0.0)).float(), None
+        return gradient * ((x >= minimum) | (gradient < 0.0)), None
 
 class NegativeLogarithmFunction:
     @staticmethod
     def apply(x, epsilon):
-        return -LowerBoundFunction.apply(x, epsilon).log2()
+        return -torch.log2(LowerBoundFunction.apply(x, epsilon))
 
 class LowerBoundParameter(torch.nn.Module):
     def __init__(
@@ -67,7 +67,7 @@ class GDN(torch.nn.Module):
 
     def forward(self, x):
         beta = self.beta()
-        gamma = self.gamma().view(self.channels, self.channels, 1, 1)
+        gamma = self.gamma().reshape(self.channels, self.channels, 1, 1)
         output = torch.nn.functional.conv2d(x ** 2, gamma, beta)
         if self.inverse:
             return x * torch.sqrt(output)
@@ -75,11 +75,16 @@ class GDN(torch.nn.Module):
             return x * torch.rsqrt(output)
 
 class Experts(torch.nn.Module):
-    def __init__(self, channels, experts):
+    def __init__(
+        self,
+        channels,
+        experts = 16,
+        capacity = 1,
+    ):
         super().__init__()
-        self.convolution1 = torch.nn.Conv1d(channels * experts, channels * experts, kernel_size=1, groups=experts)
-        self.activation1 = torch.nn.LeakyReLU()
-        self.convolution2 = torch.nn.Conv1d(channels * experts, channels * experts, kernel_size=1, groups=experts)
+        self.convolution1 = torch.nn.Conv1d(channels * experts, channels * experts * capacity, kernel_size=1, groups=experts)
+        self.activation1 = torch.nn.SiLU()
+        self.convolution2 = torch.nn.Conv1d(channels * experts * capacity, channels * experts, kernel_size=1, groups=experts)
 
     def forward(self, x):
         x = self.convolution1(x)
@@ -87,29 +92,35 @@ class Experts(torch.nn.Module):
         x = self.convolution2(x)
         return x
 
-class MoE(torch.nn.Module):
-    def __init__(self, channels, experts):
+class ExpertsMixture(torch.nn.Module):
+    def __init__(
+        self,
+        channels,
+        experts = 16,
+        capacity = 1,
+    ):
         super().__init__()
-        self.experts = Experts(channels, experts=experts)
         self.scaling = channels ** -0.5
+        self.experts = Experts(channels, experts, capacity)
         self.weights = torch.nn.Conv2d(channels, experts, kernel_size=1, bias=False)
 
-    def forward(self, x):
-        weights = self.weights(x) * self.scaling
-        outputs = torch.einsum("BCHW, BEHW -> BEC", x, torch.softmax(weights.flatten(2), dim=2).view_as(weights))
-        outputs = self.get_experts_outputs(outputs)
-        outputs = torch.einsum("BEC, BEHW -> BCHW", outputs, torch.softmax(weights, dim=1))
-        return outputs
+    def forward(self, symbols):
+        weights = self.weights(symbols) * self.scaling
+        symbols = torch.einsum("BCHW, BEHW -> BEC", symbols, torch.softmax(weights.flatten(2), dim=2).view_as(weights))
+        symbols = self.get_outputs_from_experts(symbols)
+        symbols = torch.einsum("BEC, BEHW -> BCHW", symbols, torch.softmax(weights, dim=1))
+        return symbols
 
-    def get_experts_outputs(self, outputs):
-        return self.experts(outputs.flatten(1).unsqueeze(2)).view_as(outputs)
+    def get_outputs_from_experts(self, symbols):
+        return self.experts(symbols.flatten(1).unsqueeze(2)).view_as(symbols)
 
 class Encoder(torch.nn.Module):
     def __init__(
         self,
         features,
         channels,
-        experts,
+        experts = 16,
+        capacity = 1,
         minimum = 1e-6,
         origin = 0.1,
         epsilon = 1e-6,
@@ -117,13 +128,13 @@ class Encoder(torch.nn.Module):
         super().__init__()
         self.convolution1 = torch.nn.Conv2d(features, channels, kernel_size=5, stride=2, padding=2)
         self.activation1 = GDN(channels, minimum=minimum, origin=origin, epsilon=epsilon)
-        self.experts1 = MoE(channels, experts=experts)
+        self.experts1 = ExpertsMixture(channels, experts=experts, capacity=capacity)
         self.convolution2 = torch.nn.Conv2d(channels, channels, kernel_size=5, stride=2, padding=2)
         self.activation2 = GDN(channels, minimum=minimum, origin=origin, epsilon=epsilon)
-        self.experts2 = MoE(channels, experts=experts)
+        self.experts2 = ExpertsMixture(channels, experts=experts, capacity=capacity)
         self.convolution3 = torch.nn.Conv2d(channels, channels, kernel_size=5, stride=2, padding=2)
         self.activation3 = GDN(channels, minimum=minimum, origin=origin, epsilon=epsilon)
-        self.experts3 = MoE(channels, experts=experts)
+        self.experts3 = ExpertsMixture(channels, experts=experts, capacity=capacity)
         self.convolution4 = torch.nn.Conv2d(channels, channels, kernel_size=5, stride=2, padding=2)
 
     def forward(self, x):
@@ -140,14 +151,19 @@ class Encoder(torch.nn.Module):
         return x
 
 class HyperEncoder(torch.nn.Module):
-    def __init__(self, channels, experts):
+    def __init__(
+        self,
+        channels,
+        experts = 16,
+        capacity = 1,
+    ):
         super().__init__()
         self.convolution1 = torch.nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1)
         self.activation1 = torch.nn.LeakyReLU()
-        self.experts1 = MoE(channels, experts=experts)
+        self.experts1 = ExpertsMixture(channels, experts=experts, capacity=capacity)
         self.convolution2 = torch.nn.Conv2d(channels, channels, kernel_size=5, stride=2, padding=2)
         self.activation2 = torch.nn.LeakyReLU()
-        self.experts2 = MoE(channels, experts=experts)
+        self.experts2 = ExpertsMixture(channels, experts=experts, capacity=capacity)
         self.convolution3 = torch.nn.Conv2d(channels, channels, kernel_size=5, stride=2, padding=2)
 
     def forward(self, x):
@@ -165,7 +181,8 @@ class Decoder(torch.nn.Module):
         self,
         channels,
         features,
-        experts,
+        experts = 16,
+        capacity = 1,
         minimum = 1e-6,
         origin = 0.1,
         epsilon = 1e-6,
@@ -173,13 +190,13 @@ class Decoder(torch.nn.Module):
         super().__init__()
         self.convolution1 = torch.nn.ConvTranspose2d(channels, channels, kernel_size=5, stride=2, padding=2, output_padding=1)
         self.activation1 = GDN(channels, inverse=True, minimum=minimum, origin=origin, epsilon=epsilon)
-        self.experts1 = MoE(channels, experts=experts)
+        self.experts1 = ExpertsMixture(channels, experts=experts, capacity=capacity)
         self.convolution2 = torch.nn.ConvTranspose2d(channels, channels, kernel_size=5, stride=2, padding=2, output_padding=1)
         self.activation2 = GDN(channels, inverse=True, minimum=minimum, origin=origin, epsilon=epsilon)
-        self.experts2 = MoE(channels, experts=experts)
+        self.experts2 = ExpertsMixture(channels, experts=experts, capacity=capacity)
         self.convolution3 = torch.nn.ConvTranspose2d(channels, channels, kernel_size=5, stride=2, padding=2, output_padding=1)
         self.activation3 = GDN(channels, inverse=True, minimum=minimum, origin=origin, epsilon=epsilon)
-        self.experts3 = MoE(channels, experts=experts)
+        self.experts3 = ExpertsMixture(channels, experts=experts, capacity=capacity)
         self.convolution4 = torch.nn.ConvTranspose2d(channels, features, kernel_size=5, stride=2, padding=2, output_padding=1)
 
     def forward(self, x):
@@ -196,14 +213,19 @@ class Decoder(torch.nn.Module):
         return x
 
 class HyperDecoder(torch.nn.Module):
-    def __init__(self, channels, experts):
+    def __init__(
+        self,
+        channels,
+        experts = 16,
+        capacity = 1,
+    ):
         super().__init__()
         self.convolution1 = torch.nn.ConvTranspose2d(channels * 3 // 3, channels * 4 // 3, kernel_size=5, stride=2, padding=2, output_padding=1)
         self.activation1 = torch.nn.LeakyReLU()
-        self.experts1 = MoE(channels * 4 // 3, experts=experts)
+        self.experts1 = ExpertsMixture(channels * 4 // 3, experts=experts, capacity=capacity)
         self.convolution2 = torch.nn.ConvTranspose2d(channels * 4 // 3, channels * 5 // 3, kernel_size=5, stride=2, padding=2, output_padding=1)
         self.activation2 = torch.nn.LeakyReLU()
-        self.experts2 = MoE(channels * 5 // 3, experts=experts)
+        self.experts2 = ExpertsMixture(channels * 5 // 3, experts=experts, capacity=capacity)
         self.convolution3 = torch.nn.ConvTranspose2d(channels * 5 // 3, channels * 6 // 3, kernel_size=3, stride=1, padding=1, output_padding=0)
 
     def forward(self, x):
@@ -216,38 +238,6 @@ class HyperDecoder(torch.nn.Module):
         x = self.convolution3(x)
         return x
 
-class Context(torch.nn.Conv2d):
-    def __init__(
-        self,
-        channels,
-        expansion = 2,
-        kernel_size = 5,
-    ):
-        super().__init__(channels, channels * expansion, kernel_size=kernel_size, padding=kernel_size // 2)
-        self.register_buffer("mask", torch.ones_like(self.weight.data))
-        self.mask[:, :, kernel_size // 2 + 1:, :] = 0.0
-        self.mask[:, :, kernel_size // 2, kernel_size // 2:] = 0.0
-
-    def forward(self, x):
-        return torch.nn.functional.conv2d(x, self.weight * self.mask, self.bias, self.stride, self.padding)
-
-class Entropy(torch.nn.Module):
-    def __init__(self, channels):
-        super().__init__()
-        self.convolution1 = torch.nn.Conv2d(channels * 6 // 6, channels * 5 // 6, kernel_size=1, stride=1, padding=0)
-        self.activation1 = torch.nn.LeakyReLU()
-        self.convolution2 = torch.nn.Conv2d(channels * 5 // 6, channels * 4 // 6, kernel_size=1, stride=1, padding=0)
-        self.activation2 = torch.nn.LeakyReLU()
-        self.convolution3 = torch.nn.Conv2d(channels * 4 // 6, channels * 3 // 6, kernel_size=1, stride=1, padding=0)
-
-    def forward(self, x, y):
-        x = self.convolution1(torch.cat([x, y], dim=1))
-        x = self.activation1(x)
-        x = self.convolution2(x)
-        x = self.activation2(x)
-        x = self.convolution3(x).chunk(2, dim=1)
-        return x
-
 class Quantizer(torch.nn.Module):
     def forward(self, x):
         if self.training:
@@ -256,17 +246,22 @@ class Quantizer(torch.nn.Module):
             return x.round()
 
 class GaussianLikelihood(torch.nn.Module):
-    def __init__(self, epsilon = 1e-6):
+    def __init__(
+        self,
+        minimum = 0.1,
+        epsilon = 1e-6,
+    ):
         super().__init__()
         self.register_buffer("epsilon", torch.tensor(epsilon))
+        self.register_buffer("minimum", torch.tensor(minimum))
 
     def forward(self, x, means, scales):
-        upper = self.get_gaussian_cumulative(x + 0.5, means, scales)
-        lower = self.get_gaussian_cumulative(x - 0.5, means, scales)
+        upper = self.get_gaussian_cumulative(x, +0.5, means, scales)
+        lower = self.get_gaussian_cumulative(x, -0.5, means, scales)
         return NegativeLogarithmFunction.apply(upper - lower, self.epsilon).sum(dim=[1, 2, 3])
 
-    def get_gaussian_cumulative(self, x, means, scales):
-        return torch.special.ndtr((x - means) / LowerBoundFunction.apply(scales, self.epsilon))
+    def get_gaussian_cumulative(self, x, offset, means, scales):
+        return torch.special.ndtr((offset - torch.abs(x - means)) / LowerBoundFunction.apply(scales, self.minimum))
 
 class FactorizedCumulative(torch.nn.Module):
     def __init__(
@@ -274,20 +269,20 @@ class FactorizedCumulative(torch.nn.Module):
         channels,
         encoded = 3,
         decoded = 3,
-        filtered = True,
+        factored = True,
     ):
         super().__init__()
         self.channels = channels
         self.biases = torch.nn.Parameter(torch.empty(channels * decoded).uniform_(-0.5, 0.5))
         self.weights = torch.nn.Parameter(torch.empty(channels * decoded, encoded, 1, 1).fill_(-1.5))
-        self.filtered = filtered
-        if self.filtered:
-            self.factors = torch.nn.Parameter(torch.zeros(1, channels * decoded, 1, 1))
+        self.factored = factored
+        if self.factored:
+            self.factors = torch.nn.Parameter(torch.zeros(channels * decoded, 1, 1))
 
     def forward(self, x):
         weights = torch.nn.functional.softplus(self.weights)
         outputs = torch.nn.functional.conv2d(x, weights, self.biases, groups=self.channels)
-        if self.filtered:
+        if self.factored:
             return outputs + torch.tanh(outputs) * torch.tanh(self.factors)
         else:
             return outputs
@@ -296,21 +291,21 @@ class FactorizedLikelihood(torch.nn.Module):
     def __init__(
         self,
         channels,
-        epsilon = 1e-6,
-        filters = (True, True, True, False),
         features = (1, 3, 3, 3, 1),
+        epsilon = 1e-6,
+        factored = (True, True, True, False),
     ):
         super().__init__()
         self.register_buffer("epsilon", torch.tensor(epsilon))
-        self.factorized_cumulative = torch.nn.Sequential(*self.get_cumulative_modules(channels, filters, features))
+        self.cumulative = torch.nn.Sequential(*self.get_cumulative_modules(channels, features, factored))
 
     def forward(self, x):
-        upper = self.factorized_cumulative(x + 0.5).sigmoid()
-        lower = self.factorized_cumulative(x - 0.5).sigmoid()
+        upper = self.cumulative(x + 0.5).sigmoid()
+        lower = self.cumulative(x - 0.5).sigmoid()
         return NegativeLogarithmFunction.apply(upper - lower, self.epsilon).sum(dim=[1, 2, 3])
 
-    def get_cumulative_modules(self, channels, filters, features):
-        return [FactorizedCumulative(channels, features[i], features[i + 1], filters[i]) for i in range(len(filters))]
+    def get_cumulative_modules(self, channels, features, factored):
+        return [FactorizedCumulative(channels, features[i], features[i+1], factored[i]) for i in range(len(factored))]
 
 class Autoencoder(torch.nn.Module):
     def __init__(
@@ -318,31 +313,28 @@ class Autoencoder(torch.nn.Module):
         features = 3,
         channels = 192,
         experts = 16,
+        capacity = 1,
         minimum = 1e-6,
         origin = 0.1,
         epsilon = 1e-6,
     ):
         super().__init__()
-        self.encoder = Encoder(features, channels, experts=experts, minimum=minimum, origin=origin, epsilon=epsilon)
-        self.hyper_encoder = HyperEncoder(channels, experts=experts)
+        self.encoder = Encoder(features, channels, experts=experts, capacity=capacity, minimum=minimum, origin=origin, epsilon=epsilon)
+        self.hyper_encoder = HyperEncoder(channels, experts=experts, capacity=capacity)
         self.quantizer = Quantizer()
-        self.hyper_decoder = HyperDecoder(channels, experts=experts)
-        self.decoder = Decoder(channels, features, experts=experts, minimum=minimum, origin=origin, epsilon=epsilon)
-        self.context = Context(channels)
-        self.entropy = Entropy(channels * 4)
+        self.hyper_decoder = HyperDecoder(channels, experts=experts, capacity=capacity)
+        self.decoder = Decoder(channels, features, experts=experts, capacity=capacity, minimum=minimum, origin=origin, epsilon=epsilon)
         self.gaussian_likelihood = GaussianLikelihood(epsilon=epsilon)
         self.factorized_likelihood = FactorizedLikelihood(channels, epsilon=epsilon)
 
     def forward(self, x):
-        x = self.encoder(x)
-        y = self.hyper_encoder(x)
-        x = self.quantizer(x)
-        y = self.quantizer(y)
-        y_bits = self.factorized_likelihood(y)
-        means, scales = self.entropy(self.context(x), self.hyper_decoder(y))
-        x_bits = self.gaussian_likelihood(x, means, scales)
-        x = self.decoder(x)
-        return x, x_bits + y_bits
+        x_encoded = self.encoder(x)
+        x_symbols = self.quantizer(x_encoded)
+        x_decoded = self.decoder(x_symbols)
+        y_encoded = self.hyper_encoder(x_encoded)
+        y_symbols = self.quantizer(y_encoded)
+        y_decoded = self.hyper_decoder(y_symbols).chunk(2, dim=1)
+        return x_decoded, self.gaussian_likelihood(x_symbols, y_decoded[0], y_decoded[1]) + self.factorized_likelihood(y_symbols)
 
 class Dataset(torch.utils.data.Dataset):
     def __init__(self, directory, patch_size):
@@ -393,7 +385,7 @@ if __name__ == "__main__":
             optimizer.step()
             optimizer.zero_grad()
             bpp_metric.update(bits / DATASET_PATCH_PIXELS)
-            psnr_metric.update(outputs, samples)
+            psnr_metric.update(outputs.clamp(0.0, 1.0), samples)
         print(f"[EPOCH {epoch}]: BPP: {bpp_metric.compute().item():.5f} PSNR: {psnr_metric.compute().item():.3f}")
         if epoch % MODEL_SAVING_INTERVAL == 0:
             torch.save({
@@ -411,5 +403,5 @@ if __name__ == "__main__":
                         samples = samples.to(device).float() * DATASET_PATCH_SCALING
                         outputs, bits = model(samples)
                         bpp_metric.update(bits / DATASET_PATCH_PIXELS)
-                        psnr_metric.update(outputs, samples)
+                        psnr_metric.update(outputs.clamp(0.0, 1.0), samples)
                 print(f"[EPOCH {epoch} - TESTING]: BPP: {bpp_metric.compute().item():.5f} PSNR: {psnr_metric.compute().item():.3f}")

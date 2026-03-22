@@ -158,28 +158,19 @@ class Encoder(torch.nn.Module):
         return x
 
 class HyperEncoder(torch.nn.Module):
-    def __init__(
-        self,
-        channels,
-        experts = 16,
-        capacity = 1,
-    ):
+    def __init__(self, channels):
         super().__init__()
         self.convolution1 = torch.nn.Conv2d(channels, channels, kernel_size=3, stride=1, padding=1)
         self.activation1 = torch.nn.LeakyReLU()
-        self.experts1 = ExpertsMixture(channels, experts=experts, capacity=capacity)
         self.convolution2 = torch.nn.Conv2d(channels, channels, kernel_size=5, stride=2, padding=2)
         self.activation2 = torch.nn.LeakyReLU()
-        self.experts2 = ExpertsMixture(channels, experts=experts, capacity=capacity)
         self.convolution3 = torch.nn.Conv2d(channels, channels, kernel_size=5, stride=2, padding=2)
 
     def forward(self, x):
         x = self.convolution1(x)
         x = self.activation1(x)
-        x = x + self.experts1(x)
         x = self.convolution2(x)
         x = self.activation2(x)
-        x = x + self.experts2(x)
         x = self.convolution3(x)
         return x
 
@@ -220,28 +211,19 @@ class Decoder(torch.nn.Module):
         return x
 
 class HyperDecoder(torch.nn.Module):
-    def __init__(
-        self,
-        channels,
-        experts = 16,
-        capacity = 1,
-    ):
+    def __init__(self, channels):
         super().__init__()
         self.convolution1 = torch.nn.ConvTranspose2d(channels * 3 // 3, channels * 4 // 3, kernel_size=5, stride=2, padding=2, output_padding=1)
         self.activation1 = torch.nn.LeakyReLU()
-        self.experts1 = ExpertsMixture(channels * 4 // 3, experts=experts, capacity=capacity)
         self.convolution2 = torch.nn.ConvTranspose2d(channels * 4 // 3, channels * 5 // 3, kernel_size=5, stride=2, padding=2, output_padding=1)
         self.activation2 = torch.nn.LeakyReLU()
-        self.experts2 = ExpertsMixture(channels * 5 // 3, experts=experts, capacity=capacity)
         self.convolution3 = torch.nn.ConvTranspose2d(channels * 5 // 3, channels * 6 // 3, kernel_size=3, stride=1, padding=1, output_padding=0)
 
     def forward(self, x):
         x = self.convolution1(x)
         x = self.activation1(x)
-        x = x + self.experts1(x)
         x = self.convolution2(x)
         x = self.activation2(x)
-        x = x + self.experts2(x)
         x = self.convolution3(x)
         return x
 

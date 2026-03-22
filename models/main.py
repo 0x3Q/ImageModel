@@ -101,11 +101,12 @@ class ExpertsMixture(torch.nn.Module):
         channels,
         experts = 16,
         capacity = 1,
+        scaling = -0.5,
     ):
         super().__init__()
-        self.scaling = channels ** -0.5
+        self.scaling = torch.nn.Parameter(torch.tensor(channels ** scaling))
         self.experts = Experts(channels, experts, capacity)
-        self.weights = torch.nn.Conv2d(channels, experts, kernel_size=1, bias=False)
+        self.weights = torch.nn.Conv2d(channels, experts, kernel_size=1, stride=1, padding=0, bias=False)
 
     def forward(self, symbols):
         weights = self.weights(symbols) * self.scaling

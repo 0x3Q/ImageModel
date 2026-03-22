@@ -399,7 +399,7 @@ if __name__ == "__main__":
                 "epoch": epoch,
                 "model": model.state_dict(),
                 "optimizer": optimizer.state_dict(),
-            }, f"VAE-{epoch}.pth")
+            }, f"outputs/VAE-{epoch}.pth")
         if epoch % MODEL_TESTING_INTERVAL == 0:
             model.eval()
             bpp_metric.reset()

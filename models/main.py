@@ -309,9 +309,9 @@ class Autoencoder(torch.nn.Module):
     ):
         super().__init__()
         self.encoder = Encoder(features, channels, experts=experts, capacity=capacity, minimum=minimum, origin=origin, epsilon=epsilon)
-        self.hyper_encoder = HyperEncoder(channels, experts=experts, capacity=capacity)
+        self.hyper_encoder = HyperEncoder(channels)
         self.quantizer = Quantizer()
-        self.hyper_decoder = HyperDecoder(channels, experts=experts, capacity=capacity)
+        self.hyper_decoder = HyperDecoder(channels)
         self.decoder = Decoder(channels, features, experts=experts, capacity=capacity, minimum=minimum, origin=origin, epsilon=epsilon)
         self.gaussian_likelihood = GaussianLikelihood(epsilon=epsilon)
         self.factorized_likelihood = FactorizedLikelihood(channels, epsilon=epsilon)

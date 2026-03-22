@@ -78,8 +78,8 @@ class Experts(torch.nn.Module):
     def __init__(
         self,
         channels,
-        experts = 16,
-        capacity = 1,
+        experts,
+        capacity,
     ):
         super().__init__()
         self.convolution1 = torch.nn.Conv1d(channels * experts, channels * experts * capacity, kernel_size=1, groups=experts)
@@ -91,6 +91,9 @@ class Experts(torch.nn.Module):
         x = self.activation1(x)
         x = self.convolution2(x)
         return x
+
+    def get_outputs_from_symbols(self, symbols):
+        return self(symbols.flatten(1).unsqueeze(2)).view_as(symbols)
 
 class ExpertsMixture(torch.nn.Module):
     def __init__(
@@ -107,12 +110,9 @@ class ExpertsMixture(torch.nn.Module):
     def forward(self, symbols):
         weights = self.weights(symbols) * self.scaling
         symbols = torch.einsum("BCHW, BEHW -> BEC", symbols, torch.softmax(weights.flatten(2), dim=2).view_as(weights))
-        symbols = self.get_outputs_from_experts(symbols)
+        symbols = self.experts.get_outputs_from_symbols(symbols)
         symbols = torch.einsum("BEC, BEHW -> BCHW", symbols, torch.softmax(weights, dim=1))
         return symbols
-
-    def get_outputs_from_experts(self, symbols):
-        return self.experts(symbols.flatten(1).unsqueeze(2)).view_as(symbols)
 
 class Encoder(torch.nn.Module):
     def __init__(

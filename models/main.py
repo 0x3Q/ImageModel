@@ -109,10 +109,16 @@ class ExpertsMixture(torch.nn.Module):
 
     def forward(self, symbols):
         weights = self.weights(symbols) * self.scaling
-        symbols = torch.einsum("BCHW, BEHW -> BEC", symbols, torch.softmax(weights.flatten(2), dim=2).view_as(weights))
+        symbols = torch.einsum("BCHW, BEHW -> BEC", symbols, self.get_softmax_from_weights(weights, 2, 3))
         symbols = self.experts.get_outputs_from_symbols(symbols)
-        symbols = torch.einsum("BEC, BEHW -> BCHW", symbols, torch.softmax(weights, dim=1))
+        symbols = torch.einsum("BEC, BEHW -> BCHW", symbols, self.get_softmax_from_weights(weights, 1, 1))
         return symbols
+
+    def get_softmax_from_weights(self, weights, start, finish):
+        if start == finish:
+            return torch.softmax(weights, dim=start)
+        else:
+            return torch.softmax(weights.flatten(start, finish), dim=start).view_as(weights)
 
 class Encoder(torch.nn.Module):
     def __init__(

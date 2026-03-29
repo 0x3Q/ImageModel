@@ -9,15 +9,23 @@ DATASET_TRAINING_DIRECTORY = "..."
 DATASET_PATCH_SIZE = 256
 DATASET_PATCH_PIXELS = DATASET_PATCH_SIZE * DATASET_PATCH_SIZE
 DATASET_PATCH_SCALING = 1.0 / 255.0
-MODEL_EPOCHS = 100000
-MODEL_BATCH_SIZE = 16
-MODEL_LEARNING_RATE = 1e-4
-MODEL_SAVING_INTERVAL = 250
-MODEL_CHECKPOINT_IMPORT = None
-MODEL_TESTING_INTERVAL = 10
-MODEL_TESTING_ITERATIONS = 16
-MODEL_LAGRANGE_MULTIPLIER = 1e-2
-MODEL_GRADIENT_CLIPPING_THRESHOLD = 1.0
+
+MODEL_FEATURES = 3
+MODEL_CHANNELS = 192
+MODEL_EXPERTS = 16
+MODEL_CAPACITY = 1
+MODEL_LAMBDA_VARIANT = 6
+MODEL_LAMBDA_MULTIPLIER = 2 ** -MODEL_LAMBDA_VARIANT
+MODEL_UNIQUE_VARIANT_STRING = f"VAEMOE{MODEL_EXPERTS}-V{MODEL_LAMBDA_VARIANT}"
+
+SCRIPT_TRAINING_EPOCHS = 4000
+SCRIPT_TRAINING_BATCH_SIZE = 16
+SCRIPT_TRAINING_LEARNING_RATE = 1e-4
+SCRIPT_TRAINING_GRADIENT_CLIPPING_THRESHOLD = 1.0
+SCRIPT_TESTING_INTERVAL = 10
+SCRIPT_TESTING_ITERATIONS = 16
+SCRIPT_CHECKPOINT_IMPORT = None
+SCRIPT_CHECKPOINT_SAVING_INTERVAL = 250
 
 class LowerBoundFunction(torch.autograd.Function):
     @staticmethod
@@ -345,22 +353,22 @@ class Dataset(torch.utils.data.Dataset):
 
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = Autoencoder().to(device)
+    model = Autoencoder(features=MODEL_FEATURES, channels=MODEL_CHANNELS, experts=MODEL_EXPERTS, capacity=MODEL_CAPACITY).to(device)
     bpp_metric = torchmetrics.MeanMetric().to(device)
     psnr_metric = torchmetrics.image.PeakSignalNoiseRatio(1.0).to(device)
-    optimizer = torch.optim.Adam(model.parameters(), MODEL_LEARNING_RATE)
+    optimizer = torch.optim.Adam(model.parameters(), SCRIPT_TRAINING_LEARNING_RATE)
     epoch_offset = 0
     testing_dataset = Dataset(DATASET_TESTING_DIRECTORY, patch_size=DATASET_PATCH_SIZE)
     training_dataset = Dataset(DATASET_TRAINING_DIRECTORY, patch_size=DATASET_PATCH_SIZE)
-    testing_batches = torch.utils.data.DataLoader(testing_dataset, batch_size=MODEL_BATCH_SIZE, shuffle=False)
-    training_batches = torch.utils.data.DataLoader(training_dataset, batch_size=MODEL_BATCH_SIZE, shuffle=True)
+    testing_batches = torch.utils.data.DataLoader(testing_dataset, batch_size=SCRIPT_TRAINING_BATCH_SIZE, shuffle=False)
+    training_batches = torch.utils.data.DataLoader(training_dataset, batch_size=SCRIPT_TRAINING_BATCH_SIZE, shuffle=True)
 
-    if MODEL_CHECKPOINT_IMPORT is not None:
-        checkpoint = torch.load(MODEL_CHECKPOINT_IMPORT, map_location=device, weights_only=True)
+    if SCRIPT_CHECKPOINT_IMPORT is not None:
+        checkpoint = torch.load(SCRIPT_CHECKPOINT_IMPORT, map_location=device, weights_only=True)
         epoch_offset = checkpoint["epoch"]
         model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
-    for epoch in range(epoch_offset + 1, MODEL_EPOCHS + 1):
+    for epoch in range(epoch_offset + 1, SCRIPT_TRAINING_EPOCHS + 1):
         model.train()
         bpp_metric.reset()
         psnr_metric.reset()
@@ -369,25 +377,25 @@ if __name__ == "__main__":
             outputs, bits = model(samples)
             rate_loss = bits.mean() / DATASET_PATCH_PIXELS
             distortion_loss = torch.nn.functional.mse_loss(outputs, samples) * DATASET_PATCH_PIXELS
-            (rate_loss + distortion_loss * MODEL_LAGRANGE_MULTIPLIER).backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), MODEL_GRADIENT_CLIPPING_THRESHOLD)
+            (rate_loss + distortion_loss * MODEL_LAMBDA_MULTIPLIER).backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), SCRIPT_TRAINING_GRADIENT_CLIPPING_THRESHOLD)
             optimizer.step()
             optimizer.zero_grad()
             bpp_metric.update(bits / DATASET_PATCH_PIXELS)
             psnr_metric.update(outputs.clamp(0.0, 1.0), samples)
         print(f"[EPOCH {epoch}]: BPP: {bpp_metric.compute().item():.5f} PSNR: {psnr_metric.compute().item():.3f}")
-        if epoch % MODEL_SAVING_INTERVAL == 0:
+        if epoch % SCRIPT_CHECKPOINT_SAVING_INTERVAL == 0:
             torch.save({
                 "epoch": epoch,
                 "model": model.state_dict(),
                 "optimizer": optimizer.state_dict(),
-            }, f"outputs/VAE-{epoch}.pth")
-        if epoch % MODEL_TESTING_INTERVAL == 0:
+            }, f"outputs/{MODEL_UNIQUE_VARIANT_STRING}-{epoch}.pth")
+        if epoch % SCRIPT_TESTING_INTERVAL == 0:
             model.eval()
             bpp_metric.reset()
             psnr_metric.reset()
             with torch.no_grad():
-                for _ in range(MODEL_TESTING_ITERATIONS):
+                for _ in range(SCRIPT_TESTING_ITERATIONS):
                     for samples in testing_batches:
                         samples = samples.to(device).float() * DATASET_PATCH_SCALING
                         outputs, bits = model(samples)

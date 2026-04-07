@@ -1,5 +1,6 @@
 import os
 import sys
+import csv
 import torch
 import torchvision
 import torchmetrics
@@ -9,6 +10,7 @@ DATASET_TRAINING_DIRECTORY = "..."
 DATASET_PATCH_SIZE = 256
 DATASET_PATCH_PIXELS = DATASET_PATCH_SIZE * DATASET_PATCH_SIZE
 DATASET_PATCH_SCALING = 1.0 / 255.0
+DATASET_PATCH_UNSCALING = 1.0 / DATASET_PATCH_SCALING ** 2
 
 MODEL_FEATURES = 3
 MODEL_CHANNELS = 192
@@ -376,14 +378,18 @@ if __name__ == "__main__":
             samples = samples.to(device).float() * DATASET_PATCH_SCALING
             outputs, bits = model(samples)
             rate_loss = bits.mean() / DATASET_PATCH_PIXELS
-            distortion_loss = torch.nn.functional.mse_loss(outputs, samples) * DATASET_PATCH_PIXELS
+            distortion_loss = torch.nn.functional.mse_loss(outputs, samples) * DATASET_PATCH_UNSCALING
             (rate_loss + distortion_loss * MODEL_LAMBDA_MULTIPLIER).backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), SCRIPT_TRAINING_GRADIENT_CLIPPING_THRESHOLD)
             optimizer.step()
             optimizer.zero_grad()
             bpp_metric.update(bits / DATASET_PATCH_PIXELS)
             psnr_metric.update(outputs.clamp(0.0, 1.0), samples)
-        print(f"[EPOCH {epoch}]: BPP: {bpp_metric.compute().item():.5f} PSNR: {psnr_metric.compute().item():.3f}")
+        bpp_metric_output = bpp_metric.compute().item()
+        psnr_metric_output = psnr_metric.compute().item()
+        print(f"[EPOCH {epoch}]: BPP: {bpp_metric_output:.5f} PSNR: {psnr_metric_output:.3f}")
+        with open(f"outputs/{MODEL_UNIQUE_VARIANT_STRING}-TRAINING.csv", mode="a", newline="") as file:
+            csv.writer(file).writerow([epoch, bpp_metric_output, psnr_metric_output])
         if epoch % SCRIPT_CHECKPOINT_SAVING_INTERVAL == 0:
             torch.save({
                 "epoch": epoch,
@@ -401,4 +407,5 @@ if __name__ == "__main__":
                         outputs, bits = model(samples)
                         bpp_metric.update(bits / DATASET_PATCH_PIXELS)
                         psnr_metric.update(outputs.clamp(0.0, 1.0), samples)
-                print(f"[EPOCH {epoch} - TESTING]: BPP: {bpp_metric.compute().item():.5f} PSNR: {psnr_metric.compute().item():.3f}")
+                with open(f"outputs/{MODEL_UNIQUE_VARIANT_STRING}-TESTING.csv", mode="a", newline="") as file:
+                    csv.writer(file).writerow([epoch, bpp_metric.compute().item(), psnr_metric.compute().item(), SCRIPT_TESTING_ITERATIONS])

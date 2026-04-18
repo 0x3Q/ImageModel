@@ -2,7 +2,7 @@
 
 ## Datasets
 
-We use the LSDIR dataset, which contains 84,991 high-quality training images. During training, we extract random 256x256 patches and apply random horizontal flips for augmentation. We evaluate our model performance using the Kodak dataset by extracting multiple patches from each image and calculating averages of the metrics.
+We use the LSDIR dataset, which contains 84,991 high-quality training images. During training, we extract random 256x256 patches and apply random horizontal flips for augmentation. We evaluate our model performance using the LSDIR validation dataset by extracting multiple patches from each image and calculating averages of the metrics.
 
 ## References:
 

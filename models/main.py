@@ -367,6 +367,7 @@ if __name__ == "__main__":
         batch_size=SCRIPT_TRAINING_BATCH_SIZE,
         num_workers=SCRIPT_TRAINING_DATASET_WORKERS,
         shuffle=True,
+        pin_memory=True,
         persistent_workers=True,
     )
 
@@ -376,6 +377,7 @@ if __name__ == "__main__":
         model.load_state_dict(checkpoint["model"])
         optimizer.load_state_dict(checkpoint["optimizer"])
     for epoch in range(epoch_offset + 1, SCRIPT_TRAINING_EPOCHS + 1):
+        torch.seed()
         model.train()
         bpp_metric.reset()
         psnr_metric.reset()
@@ -402,6 +404,7 @@ if __name__ == "__main__":
                 "optimizer": optimizer.state_dict(),
             }, f"outputs/{MODEL_UNIQUE_VARIANT_STRING}-{epoch}.pth")
         if epoch % SCRIPT_TESTING_INTERVAL == 0:
+            torch.manual_seed(0)
             model.eval()
             bpp_metric.reset()
             psnr_metric.reset()

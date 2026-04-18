@@ -23,6 +23,7 @@ MODEL_UNIQUE_VARIANT_STRING = f"VAEMOE{MODEL_EXPERTS}-V{MODEL_LAMBDA_VARIANT}"
 SCRIPT_TRAINING_EPOCHS = 4000
 SCRIPT_TRAINING_BATCH_SIZE = 16
 SCRIPT_TRAINING_LEARNING_RATE = 1e-4
+SCRIPT_TRAINING_DATASET_WORKERS = 8
 SCRIPT_TRAINING_GRADIENT_CLIPPING_THRESHOLD = 1.0
 SCRIPT_TESTING_INTERVAL = 10
 SCRIPT_TESTING_ITERATIONS = 16
@@ -343,15 +344,13 @@ class Dataset(torch.utils.data.Dataset):
         for root, _, files in os.walk(directory):
             for file in files:
                 if file.lower().endswith((".png", ".jpg", ".jpeg")):
-                    self.images.append(
-                        torchvision.io.read_image(os.path.join(root, file))
-                    )
+                    self.images.append(os.path.join(root, file))
 
     def __len__(self):
         return len(self.images)
 
     def __getitem__(self, index):
-        return self.random_flip(self.random_crop(self.images[index]))
+        return self.random_flip(self.random_crop(torchvision.io.read_image(self.images[index])))
 
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -362,8 +361,14 @@ if __name__ == "__main__":
     epoch_offset = 0
     testing_dataset = Dataset(DATASET_TESTING_DIRECTORY, patch_size=DATASET_PATCH_SIZE)
     training_dataset = Dataset(DATASET_TRAINING_DIRECTORY, patch_size=DATASET_PATCH_SIZE)
-    testing_batches = torch.utils.data.DataLoader(testing_dataset, batch_size=SCRIPT_TRAINING_BATCH_SIZE, shuffle=False)
-    training_batches = torch.utils.data.DataLoader(training_dataset, batch_size=SCRIPT_TRAINING_BATCH_SIZE, shuffle=True)
+    testing_batches = torch.utils.data.DataLoader(testing_dataset, batch_size=SCRIPT_TRAINING_BATCH_SIZE)
+    training_batches = torch.utils.data.DataLoader(
+        training_dataset,
+        batch_size=SCRIPT_TRAINING_BATCH_SIZE,
+        num_workers=SCRIPT_TRAINING_DATASET_WORKERS,
+        shuffle=True,
+        persistent_workers=True,
+    )
 
     if SCRIPT_CHECKPOINT_IMPORT is not None:
         checkpoint = torch.load(SCRIPT_CHECKPOINT_IMPORT, map_location=device, weights_only=True)
